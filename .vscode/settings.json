@@ -1,0 +1,9 @@
+{
+  "[cpp]": { "editor.formatOnSave": false }, "[c]": { "editor.formatOnSave": false },
+  "editor.formatOnSave": false,
+  "files.associations": {
+    "mpi.h": "c",
+    "mycollective.h": "c"
+  },
+  "python.pythonPath": "/usr/bin/python3"
+}

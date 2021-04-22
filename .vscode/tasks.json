@@ -1,0 +1,84 @@
+// Compile and execute MPI C program on Visual Studio Code using Docker
+// This task uses a Docker container with OpenMPI (https://www.open-mpi.org/) 
+// available on Docker Hub: https://hub.docker.com/r/spagnuolocarmine/docker-mpi.
+// Tested on MacOS, maybe works also on Unix-like OS.
+// Requiremnets:
+//      - Docker www.docker.com
+// Install:
+//      - Add this file to the .vscode folder inside your project home directory.
+//      - Now you have two task in the Termina->Run Task...
+//            - MPI compile active file (mpicc)
+//            - MPI run active file (mpicc && mpirun)
+// Suggestions:
+//      - Use the command Command Palette: View -> Command Palette
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+        "type": "shell",
+        "label": "MPI compile active file (mpicc)",
+        "command": "mpicc -g ./${relativeFileDirname}/${fileBasename} /home/mylib/mycollective.c -o ./${relativeFileDirname}/prova",
+        "args": [],
+        "presentation": {
+            "reveal": "always"
+        },
+        "problemMatcher": [
+            "$eslint-compact"
+        ]
+    },
+    {
+        "type": "shell",
+        "label": "MPI compile a file (mpicc)",
+        "command": "mpicc -g ./${relativeFileDirname}/${input:file} /home/mylib/mycollective.c -o ./${relativeFileDirname}/prova",
+        "args": [],
+        "presentation": {
+            "reveal": "always"
+        },
+        "problemMatcher": [
+            "$eslint-compact"
+        ]
+    },
+    {
+        "type": "shell",
+        "label": "MPI run a file (mpicc && mpirun)",
+        "command": "mpirun --allow-run-as-root -np ${input:np} ./${relativeFileDirname}/prova",
+        "dependsOn": [
+            "MPI compile a file (mpicc)"
+        ],
+        "presentation": {
+            "reveal": "always"
+        },
+        "problemMatcher": [
+            "$eslint-compact"
+        ]
+    },
+    {
+        "type": "shell",
+        "label": "MPI run active file (mpicc && mpirun)",
+        "command": "mpirun --allow-run-as-root -np ${input:np} ./${relativeFileDirname}/prova",
+        "dependsOn": [
+            "MPI compile active file (mpicc)"
+        ],
+        "presentation": {
+            "reveal": "always"
+        },
+        "problemMatcher": [
+            "$eslint-compact"
+        ]
+    }
+    ],
+    "inputs": [
+    {
+        "id": "file",
+        "description": "File:",
+        "default": "Hello",
+        "type": "promptString"
+    },
+    {
+        "id": "np",
+        "description": "Process numbers",
+        "default": "1",
+        "type": "promptString"
+    }
+]
+}
