@@ -17,7 +17,7 @@
     {
         "type": "shell",
         "label": "MPI compile active file (mpicc)",
-        "command": "mpicc -g ./${relativeFileDirname}/${fileBasename} /home/mylib/mycollective.c -o ./${relativeFileDirname}/prova",
+        "command": "mpicc -g ./${relativeFileDirname}/${fileBasename} -o ./${relativeFileDirname}/prova",
         "args": [],
         "presentation": {
             "reveal": "always"
@@ -41,7 +41,7 @@
     {
         "type": "shell",
         "label": "MPI run a file (mpicc && mpirun)",
-        "command": "mpirun --allow-run-as-root -np ${input:np} ./${relativeFileDirname}/prova",
+        "command": "mpirun --allow-run-as-root -np ${input:np} ./${relativeFileDirname}/prova ${input:dir}",
         "dependsOn": [
             "MPI compile a file (mpicc)"
         ],
@@ -55,7 +55,7 @@
     {
         "type": "shell",
         "label": "MPI run active file (mpicc && mpirun)",
-        "command": "mpirun --allow-run-as-root -np ${input:np} ./${relativeFileDirname}/prova",
+        "command": "mpirun --allow-run-as-root -np ${input:np} ./${relativeFileDirname}/prova ${input:dir}",
         "dependsOn": [
             "MPI compile active file (mpicc)"
         ],
@@ -79,6 +79,12 @@
         "description": "Process numbers",
         "default": "1",
         "type": "promptString"
+    },
+    {
+        "id": "dir",
+        "description": "Dir path:",
+        "default": "files",
+        "type": "promptString"
     }
-]
+    ]
 }
