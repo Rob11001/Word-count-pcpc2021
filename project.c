@@ -5,12 +5,16 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <ctype.h>
 #include "mpi.h"
+#include "./libs/uthash.h"
 
 #define FILENAME_SIZE 256
 #define READ_BUF 1024
+#define WORD_SIZE 256
 #define MASTER 0
 
+// Structures
 typedef struct {
     char filename[FILENAME_SIZE];
     off_t size_in_bytes;
@@ -22,6 +26,15 @@ typedef struct {
     int numfiles;
 } ProcessIndex;
 
+typedef struct {
+    char word[WORD_SIZE];           /* key */
+    int counts;
+    UT_hash_handle hh;  /* makes this structure hashable */ 
+} MapEntry;
+
+// Utility functions
+void add_word(MapEntry **map, char* word, int counts);
+void increase_word_counter(MapEntry **map, char *word);
 
 int main(int argc, char **argv) {
     // All processes
@@ -33,6 +46,7 @@ int main(int argc, char **argv) {
     MPI_Datatype types[3];
     MPI_Aint displacements[3];
     ProcessIndex pindex;
+    MapEntry *local_map = NULL;
 
     // Master only
     DIR* FD;
@@ -41,6 +55,7 @@ int main(int argc, char **argv) {
     FileInfo *files;
     ProcessIndex *process_indexes;
     int *offsets, *displs;
+    MapEntry *master_map = NULL;
 
 
     if(argc != 2) {
@@ -159,7 +174,7 @@ int main(int argc, char **argv) {
                     if(nextfile_size != 0) {
                         break;
                     }
-                    mybatch = 0;    // To exit from while
+                    mybatch = 0;    // To exit from the cycle
                 }
                 
                 mybatch -= nextfile_size;
@@ -204,9 +219,10 @@ int main(int argc, char **argv) {
     // Computation
     FILE *fp;
     char filename[FILENAME_SIZE];
-    char readbuf[READ_BUF];
-    int offset = pindex.start_offset;
-    int rd;
+    char readbuf[READ_BUF] = {'\0'};
+    long offset = pindex.start_offset;
+    long rd = 0;
+    int len = 0;
 
     for(int i = 0; i < pindex.numfiles; i++) {
         filename[0] = '\0';
@@ -220,19 +236,70 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
         
-        if(fseek(fp, offset, SEEK_SET) != 0) {
+        if(fseek(fp, offset > 0 ? offset - 1 : offset, SEEK_SET) != 0) {
             fprintf(stderr, "Error: fseek error on file %s\n", filename);
             
             return EXIT_FAILURE;
         }
+        char currentWord[WORD_SIZE] = {'\0'};
+        int currentWordSize = 0;
+        int jump = 0;
+        int done = 0;
 
-        while(rd = fgets(readbuf, READ_BUF, fp)) {
-            //TODO: Continuare e selezionare le parole e vedere come usare un dizionario da inviare poi
-            printf("task %d: \n%s\n", rank, readbuf);
+        while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump boolean variable to skip the cycle
+            char *p = readbuf;
+            if(!done && i == 0 && offset > 0) {  // To handle word conflicts between processes
+                rd -= 1;
+                while(isalpha(*p)) {
+                    p += 1;
+                    rd += 1;
+                }
+                done = 1;
+            }
+            
+            for(; *p && p < readbuf + READ_BUF; p++) {
+                rd += 1;
+                
+                if(isalpha(*p)) {
+                    currentWord[currentWordSize++] = tolower(*p); // Legge carattere per carattere
+                } else if(currentWordSize > 0) {
+                    // Ho una parola
+                    currentWord[currentWordSize + 1] = '\0';
+                    increase_word_counter(&local_map, currentWord);
+                    currentWord[0] = '\0';
+                    currentWordSize = 0;
+                    
+                    if(i  == pindex.numfiles - 1 && (rd + offset >= pindex.end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
+                        jump = 1;   // boolean flag to skip the outer cycle
+                        break;
+                    }
+                }
+            }
+            readbuf[0] = '\0';
+        }
+
+        // If I ended to read the file and there is still a word in currentWord buffer
+        if(currentWordSize > 0) {
+            currentWord[currentWordSize + 1] = '\0';
+            increase_word_counter(&local_map, currentWord);
+            currentWord[0] = '\0';
+            currentWordSize = 0;
         }
 
         fclose(fp);
+        rd = 0;
         offset = 0;
+    }
+
+    printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
+
+    //TODO: testare se la lettura delle parole funziona bene
+    //TODO: procedere al gathering dei dati
+    //TODO: Vedere cos'altro fare
+
+    if(rank == 0)
+    for(MapEntry *p = local_map; p != NULL; p = p->hh.next) {
+        printf("%s %d\n", p->word, p->counts);
     }
 
     MPI_Type_free(&process_data);
@@ -246,5 +313,34 @@ int main(int argc, char **argv) {
         free(process_indexes);
     }
 
+    // Free hash
+    for(MapEntry *e = local_map, *next; e; e = next) {
+        next = e->hh.next;
+        free(e);
+    }
+    
+
     return EXIT_SUCCESS;
+}
+
+
+// Functions
+
+void add_word(MapEntry **map, char* word_str, int counts) {
+    MapEntry *s = malloc(sizeof(MapEntry));
+    strcpy(s->word, word_str);
+    s->counts = counts;
+
+    HASH_ADD_STR(*map, word, s);
+}
+
+void increase_word_counter(MapEntry **map, char *word) {
+    MapEntry *entry = NULL;
+    HASH_FIND_STR(*map, word, entry);
+    
+    if(entry != NULL) {
+        entry->counts += 1;
+    } else {
+        add_word(map, word, 1);
+    }
 }
