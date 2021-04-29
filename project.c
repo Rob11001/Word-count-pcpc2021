@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <wctype.h>
+#include <wchar.h>
+#include <locale.h>
+
 #include "mpi.h"
 #include "./libs/uthash.h"
 
@@ -35,6 +39,7 @@ typedef struct {
 // Utility functions
 void add_word(MapEntry **map, char* word, int counts);
 void increase_word_counter(MapEntry **map, char *word);
+int num_of_bytes_UTF8(char first_char);
 
 int main(int argc, char **argv) {
     // All processes
@@ -64,7 +69,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    
+    // MPI init
     MPI_Init(&argc, &argv);
 
     // ProcessIndex struct type
@@ -178,9 +183,9 @@ int main(int argc, char **argv) {
                 }
                 
                 mybatch -= nextfile_size;
-                j += 1;
+                j += 1; // Pass to next file
                 if(j < size)
-                    nextfile_size = files[j].size_in_bytes;
+                    nextfile_size = files[j].size_in_bytes; //Next file's size
 
             }
 
@@ -207,14 +212,9 @@ int main(int argc, char **argv) {
     MPI_Scatter(process_indexes, 1, process_data, &pindex, 1, process_data, MASTER, MPI_COMM_WORLD);
     
     FileInfo *recvfiles = malloc(sizeof(FileInfo) * pindex.numfiles);
-    // printf("Task %d : %ld-%ld-%d\n", rank, pindex.start_offset, pindex.end_offset, pindex.numfiles);
     
     // Files info
     MPI_Scatterv(files, offsets, displs, file_info, recvfiles, pindex.numfiles, file_info, MASTER, MPI_COMM_WORLD);
-    
-    for(int i = 0; i < pindex.numfiles; i++) {
-        printf("Task %d: %s (%ld)\n", rank, recvfiles[i].filename, recvfiles[i].size_in_bytes);
-    }
 
     // Computation
     FILE *fp;
@@ -222,65 +222,81 @@ int main(int argc, char **argv) {
     char readbuf[READ_BUF] = {'\0'};
     long offset = pindex.start_offset;
     long rd = 0;
-    int len = 0;
 
     for(int i = 0; i < pindex.numfiles; i++) {
+        // Filename construction
         filename[0] = '\0';
         strcat(filename, argv[1]);
         strcat(filename,"/");
         strcat(filename, recvfiles[i].filename);
 
+        // File open
         if((fp = fopen(filename, "r")) == NULL) {
             fprintf(stderr, "Error: fopen error on file %s\n", filename);
             
             return EXIT_FAILURE;
         }
-        
+
         if(fseek(fp, offset > 0 ? offset - 1 : offset, SEEK_SET) != 0) {
             fprintf(stderr, "Error: fseek error on file %s\n", filename);
             
             return EXIT_FAILURE;
         }
+
         char currentWord[WORD_SIZE] = {'\0'};
         int currentWordSize = 0;
         int jump = 0;
         int done = 0;
-
+        
+        // File reading
         while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump boolean variable to skip the cycle
             char *p = readbuf;
             if(!done && i == 0 && offset > 0) {  // To handle word conflicts between processes
                 rd -= 1;
-                while(isalpha(*p)) {
+                
+                while(isalpha(*p) || *p < 0) {// oppure è un carattere UTF-8 con più bytes
                     p += 1;
                     rd += 1;
                 }
+                
+                if(rd < 0) {    // To set the correct rd and p value
+                    rd = 0;
+                    p += 1;
+                }
+
                 done = 1;
             }
             
+            // Reading from the buffer
             for(; *p && p < readbuf + READ_BUF; p++) {
                 rd += 1;
                 
-                if(isalpha(*p)) {
+                if(isalpha(*p)) {   // One byte char
                     currentWord[currentWordSize++] = tolower(*p); // Legge carattere per carattere
-                } else if(currentWordSize > 0) {
+                } else if(*p < 0) { // Multi byte char
+                    int len = num_of_bytes_UTF8(*p);
+                    for(int j = 0; j < len; j++)
+                        currentWord[currentWordSize++] = tolower(*(p + j));
+                    p += (len - 1);
+                } else if(currentWordSize > 0) { // Word ended
                     // Ho una parola
-                    currentWord[currentWordSize + 1] = '\0';
+                    currentWord[currentWordSize] = '\0';
                     increase_word_counter(&local_map, currentWord);
                     currentWord[0] = '\0';
                     currentWordSize = 0;
                     
-                    if(i  == pindex.numfiles - 1 && (rd + offset >= pindex.end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
+                    if(i  == pindex.numfiles - 1 && (rd + offset > pindex.end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
                         jump = 1;   // boolean flag to skip the outer cycle
                         break;
                     }
                 }
             }
-            readbuf[0] = '\0';
+            readbuf[0] = '\0';  // Buffer reset
         }
 
-        // If I ended to read the file and there is still a word in currentWord buffer
+        // If I end to read the file and there is still a word in currentWord buffer
         if(currentWordSize > 0) {
-            currentWord[currentWordSize + 1] = '\0';
+            currentWord[currentWordSize] = '\0';
             increase_word_counter(&local_map, currentWord);
             currentWord[0] = '\0';
             currentWordSize = 0;
@@ -293,14 +309,32 @@ int main(int argc, char **argv) {
 
     printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
 
-    //TODO: testare se la lettura delle parole funziona bene
     //TODO: procedere al gathering dei dati
+    //TODO: riordinare e sistemare il codice in maniera più pulita e leggibile con
     //TODO: Vedere cos'altro fare
 
-    if(rank == 0)
-    for(MapEntry *p = local_map; p != NULL; p = p->hh.next) {
-        printf("%s %d\n", p->word, p->counts);
+
+    // Gathering
+
+
+
+
+
+
+    fflush(stdout);
+    /*
+    for(int i = 0; i < numtasks; i++) {
+        MPI_Barrier(MPI_COMM_WORLD);
+        if(rank == i) {
+            printf("Task %d:\n", rank);
+            for(MapEntry *p = local_map; p != NULL; p = p->hh.next) 
+                printf("%s %d\n", p->word, p->counts);
+            
+            printf("\n");
+        }
+        fflush(stdout);
     }
+    */
 
     MPI_Type_free(&process_data);
     MPI_Type_free(&file_info);
@@ -342,5 +376,20 @@ void increase_word_counter(MapEntry **map, char *word) {
         entry->counts += 1;
     } else {
         add_word(map, word, 1);
+    }
+
+}
+
+int num_of_bytes_UTF8(char first_char) {
+    int byte = first_char & 0b11110000;
+    switch(byte) {
+        case 192: // Two bytes
+            return 2;
+        case 224: // Three bytes
+            return 3;
+        case 240: // Four bytes
+            return 4;
+        default:  // Not used
+            return 1;
     }
 }
