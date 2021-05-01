@@ -6,9 +6,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <ctype.h>
-#include <wctype.h>
-#include <wchar.h>
-#include <locale.h>
 
 #include "mpi.h"
 #include "./libs/uthash.h"
@@ -36,16 +33,25 @@ typedef struct {
     UT_hash_handle hh;  /* makes this structure hashable */ 
 } MapEntry;
 
+typedef struct {
+    char word[WORD_SIZE];
+    int counts;
+} Couple;
+
 // Utility functions
 void add_word(MapEntry **map, char* word, int counts);
-void increase_word_counter(MapEntry **map, char *word);
+void increase_word_counter(MapEntry **map, char *word, int counts);
 int num_of_bytes_UTF8(char first_char);
+int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path);
+int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int count_tag, int send_tag, MPI_Datatype couple_type, MPI_Datatype couple_type_resized);
+int receiveAndreduce(MapEntry **map, int size, int source, int tag, MPI_Datatype type);
+int map_cmp(MapEntry *a, MapEntry *b);
 
 int main(int argc, char **argv) {
     // All processes
-    int rank, numtasks, tag = 1;
+    int rank, numtasks, send_tag = 1, count_tag = 2, rc;
     off_t batch_size, total_size, remainder;
-    MPI_Datatype process_data, file_info;
+    MPI_Datatype process_data, file_info, couple_type, couple_type_resized;
     MPI_Aint extent, lb;
     int blocklengths[3];
     MPI_Datatype types[3];
@@ -58,10 +64,9 @@ int main(int argc, char **argv) {
     struct dirent* in_file;
     struct stat buf;
     FileInfo *files;
-    ProcessIndex *process_indexes;
+    ProcessIndex *pindexes;
     int *offsets, *displs;
     MapEntry *master_map = NULL;
-
 
     if(argc != 2) {
         fprintf(stderr, "Error : pass a directory path\n");
@@ -103,6 +108,21 @@ int main(int argc, char **argv) {
     MPI_Type_create_struct(2, blocklengths, displacements, types, &file_info);
     MPI_Type_commit(&file_info);
 
+    // Couple struct
+    blocklengths[0] = WORD_SIZE;
+    types[0] = MPI_CHAR;
+    displacements[0] = 0;
+
+    blocklengths[1] = 1;
+    types[1] = MPI_INT;
+    displacements[1] = blocklengths[0] * extent;
+    
+    MPI_Type_create_struct(2, blocklengths, displacements, types, &couple_type);
+    MPI_Type_commit(&couple_type);    
+    MPI_Type_get_extent(couple_type, &lb, &extent);
+    MPI_Type_create_resized(couple_type, lb, sizeof(MapEntry), &couple_type_resized);
+    MPI_Type_commit(&couple_type_resized);    
+    
     // Comm info
     MPI_Comm_size(MPI_COMM_WORLD, &numtasks);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -155,13 +175,13 @@ int main(int argc, char **argv) {
         offsets = malloc(sizeof(int) * numtasks);
         displs = malloc(sizeof(int) * numtasks);
         
-        process_indexes = malloc(sizeof(ProcessIndex) * numtasks);
+        pindexes = malloc(sizeof(ProcessIndex) * numtasks);
 
         off_t next = 0;
         off_t nextfile_size = files[0].size_in_bytes;
         // Files schedulation
         for(int i = 0, j = 0; i < numtasks; i++) {
-            process_indexes[i].start_offset = next;  // Process i begin offset
+            pindexes[i].start_offset = next;  // Process i begin offset
             displs[i] = j;
             offsets[i] = 0;
 
@@ -171,8 +191,8 @@ int main(int argc, char **argv) {
                 offsets[i] += 1;                // Assegna il file j al processore i
                 
                 if(mybatch <= nextfile_size) {       
-                    process_indexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // Calcolo la posizione in cui sono arrivato nell'ultimo file 
-                    next = (mybatch == nextfile_size) ? 0 : process_indexes[i].end_offset + 1;       // Offset di partenza del prossimo processo
+                    pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // Calcolo la posizione in cui sono arrivato nell'ultimo file 
+                    next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       // Offset di partenza del prossimo processo
                     nextfile_size -= mybatch;
 
                     // We don't need to procede to next file
@@ -189,7 +209,7 @@ int main(int argc, char **argv) {
 
             }
 
-            process_indexes[i].numfiles = offsets[i];
+            pindexes[i].numfiles = offsets[i];
         }
 
         printf("Displs: ");
@@ -202,33 +222,125 @@ int main(int argc, char **argv) {
         }
         printf("\nProcess indexes:");
         for(int i = 0; i < numtasks; i++) {
-            printf("%ld-%ld-%d ", process_indexes[i].start_offset, process_indexes[i].end_offset, process_indexes[i].numfiles);
+            printf("%ld-%ld-%d ", pindexes[i].start_offset, pindexes[i].end_offset, pindexes[i].numfiles);
         }
         printf("\n");
         
     }
 
     // Processes indexes 
-    MPI_Scatter(process_indexes, 1, process_data, &pindex, 1, process_data, MASTER, MPI_COMM_WORLD);
+    if((rc = MPI_Scatter(pindexes, 1, process_data, &pindex, 1, process_data, MASTER, MPI_COMM_WORLD)) != MPI_SUCCESS)
+        return rc;
     
     FileInfo *recvfiles = malloc(sizeof(FileInfo) * pindex.numfiles);
     
     // Files info
-    MPI_Scatterv(files, offsets, displs, file_info, recvfiles, pindex.numfiles, file_info, MASTER, MPI_COMM_WORLD);
+    if((rc = MPI_Scatterv(files, offsets, displs, file_info, recvfiles, pindex.numfiles, file_info, MASTER, MPI_COMM_WORLD))!= MPI_SUCCESS)
+        return rc;
 
-    // Computation
+    // Computation and word mapping
+    if((rc = computeAndMap(recvfiles, pindex.numfiles, pindex.start_offset, pindex.end_offset, &local_map, argv[1])) != 0) {
+        fprintf(stderr, "Computation error, error code: %d\n", rc);
+
+        return EXIT_FAILURE;
+    }
+    
+    printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
+
+    //TODO: generazione csv file da parte del master
+    //TODO: riordinare e sistemare il codice in maniera più pulita e leggibile
+    //TODO: Vedere cos'altro fare
+
+
+    // Gathering and Reduce (TODO: Aggiustare nome funzione e parametri)
+    if((rc = gatheringAndReduce(&master_map, MASTER, &local_map, rank, numtasks, count_tag, send_tag, couple_type, couple_type_resized)) != MPI_SUCCESS)
+        return rc;
+
+    if(rank == MASTER) {
+        HASH_SORT(master_map, map_cmp);
+        printf("Num: %d\n", HASH_COUNT(master_map));
+        for(MapEntry *p = master_map; p != NULL; p = p->hh.next) 
+            printf("%s %d\n", p->word, p->counts);
+    }
+
+    fflush(stdout);
+
+    MPI_Type_free(&process_data);
+    MPI_Type_free(&file_info);
+    MPI_Type_free(&couple_type);
+    MPI_Type_free(&couple_type_resized);
+    MPI_Finalize();
+
+    if(rank == MASTER) {
+        free(files);
+        free(displs);
+        free(offsets);
+        free(pindexes);
+
+        // Free hash
+        for(MapEntry *e = master_map, *next; e != NULL; e = next) {
+            next = e->hh.next;
+            free(e);
+        }
+    }
+
+    // Free hash
+    for(MapEntry *e = local_map, *next; e != NULL; e = next) {
+        next = e->hh.next;
+        free(e);
+    }
+    
+    return EXIT_SUCCESS;
+}
+
+
+// Functions
+
+void add_word(MapEntry **map, char* word_str, int counts) {
+    MapEntry *s = malloc(sizeof(MapEntry));
+    
+    strcpy(s->word, word_str);
+    s->counts = counts;
+
+    HASH_ADD_STR(*map, word, s);
+}
+
+void increase_word_counter(MapEntry **map, char *word, int counts) {
+    MapEntry *entry = NULL;
+    
+    HASH_FIND_STR(*map, word, entry);
+    if(entry != NULL) 
+        entry->counts += counts;
+     else 
+        add_word(map, word, counts);
+}
+
+int num_of_bytes_UTF8(char first_char) {
+    int byte = first_char & 0b11110000;
+    switch(byte) {
+        case 192: // Two bytes
+            return 2;
+        case 224: // Three bytes
+            return 3;
+        case 240: // Four bytes
+            return 4;
+        default:  // Not used
+            return 1;
+    }
+}
+
+int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path) {
     FILE *fp;
     char filename[FILENAME_SIZE];
     char readbuf[READ_BUF] = {'\0'};
-    long offset = pindex.start_offset;
-    long rd = 0;
+    long offset = start_offset, rd = 0;
 
-    for(int i = 0; i < pindex.numfiles; i++) {
+    for(int i = 0; i < num_files; i++) {
         // Filename construction
         filename[0] = '\0';
-        strcat(filename, argv[1]);
+        strcat(filename, dir_path);
         strcat(filename,"/");
-        strcat(filename, recvfiles[i].filename);
+        strcat(filename, files[i].filename);
 
         // File open
         if((fp = fopen(filename, "r")) == NULL) {
@@ -244,10 +356,8 @@ int main(int argc, char **argv) {
         }
 
         char currentWord[WORD_SIZE] = {'\0'};
-        int currentWordSize = 0;
-        int jump = 0;
-        int done = 0;
-        
+        int currentWordSize = 0, jump = 0, done = 0;
+       
         // File reading
         while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump boolean variable to skip the cycle
             char *p = readbuf;
@@ -281,11 +391,11 @@ int main(int argc, char **argv) {
                 } else if(currentWordSize > 0) { // Word ended
                     // Ho una parola
                     currentWord[currentWordSize] = '\0';
-                    increase_word_counter(&local_map, currentWord);
+                    increase_word_counter(map, currentWord, 1);
                     currentWord[0] = '\0';
                     currentWordSize = 0;
                     
-                    if(i  == pindex.numfiles - 1 && (rd + offset > pindex.end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
+                    if(i  == num_files - 1 && (rd + offset > end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
                         jump = 1;   // boolean flag to skip the outer cycle
                         break;
                     }
@@ -297,7 +407,7 @@ int main(int argc, char **argv) {
         // If I end to read the file and there is still a word in currentWord buffer
         if(currentWordSize > 0) {
             currentWord[currentWordSize] = '\0';
-            increase_word_counter(&local_map, currentWord);
+            increase_word_counter(map, currentWord, 1);
             currentWord[0] = '\0';
             currentWordSize = 0;
         }
@@ -307,89 +417,98 @@ int main(int argc, char **argv) {
         offset = 0;
     }
 
-    printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
+    return 0;
+}
 
-    //TODO: procedere al gathering dei dati
-    //TODO: riordinare e sistemare il codice in maniera più pulita e leggibile con
-    //TODO: Vedere cos'altro fare
+int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int count_tag, int send_tag, MPI_Datatype couple_type, MPI_Datatype couple_type_resized) {
+    int rc = 0;
+    
+    if(rank == master) {
+        // Request and counts
+        MPI_Request *reqs = malloc(sizeof(MPI_Request) * (numtasks - 1));
+        int *counts = malloc(sizeof(int) * (numtasks - 1));
 
-
-    // Gathering
-
-
-
-
-
-
-    fflush(stdout);
-    /*
-    for(int i = 0; i < numtasks; i++) {
-        MPI_Barrier(MPI_COMM_WORLD);
-        if(rank == i) {
-            printf("Task %d:\n", rank);
-            for(MapEntry *p = local_map; p != NULL; p = p->hh.next) 
-                printf("%s %d\n", p->word, p->counts);
+        // Post for counts
+        for(int p = 0, i = 0; p < numtasks; p++) {
+            if(p == master)
+                continue;
             
-            printf("\n");
+            if((rc = MPI_Irecv(counts + i, 1, MPI_INT, p, count_tag, MPI_COMM_WORLD, reqs + i)) != MPI_SUCCESS)
+                return rc;
+            i += 1;
         }
-        fflush(stdout);
-    }
-    */
 
-    MPI_Type_free(&process_data);
-    MPI_Type_free(&file_info);
-    MPI_Finalize();
+        int received = 0;
+        // Reduces the own local_map (Not really necessary, we could re-use local_map)
+        for(MapEntry *e = *local_map; e != NULL; e = e->hh.next) {
+            int index, flag;
 
-    if(rank == MASTER) {
-        free(files);
-        free(displs);
-        free(offsets);
-        free(process_indexes);
-    }
+            increase_word_counter(master_map, e->word, e->counts);
 
-    // Free hash
-    for(MapEntry *e = local_map, *next; e; e = next) {
-        next = e->hh.next;
-        free(e);
-    }
-    
+            if((rc = MPI_Testany(numtasks - 1, reqs, &index, &flag, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+                return rc;
+            
+            if(index != MPI_UNDEFINED) {
+                if((rc = receiveAndreduce(master_map, counts[index], index + 1, send_tag, couple_type)) != MPI_SUCCESS)
+                    return rc;
 
-    return EXIT_SUCCESS;
-}
+                received += 1;
+            } 
 
+        }
 
-// Functions
+        // Receives and reduces all the remains data
+        while(received != numtasks - 1) {
+            int flag, index;
+            
+            // Waits until an receive has been completed
+            if((rc = MPI_Waitany(numtasks - 1, reqs, &index, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+                return rc;
+            // Gains and reduces the data
+            if((rc = receiveAndreduce(master_map, counts[index], index + 1, send_tag, couple_type)) != MPI_SUCCESS)
+                return rc;
 
-void add_word(MapEntry **map, char* word_str, int counts) {
-    MapEntry *s = malloc(sizeof(MapEntry));
-    strcpy(s->word, word_str);
-    s->counts = counts;
+            received += 1; // Updates counter
+        }
+        
+        free(reqs);
+        free(counts);
 
-    HASH_ADD_STR(*map, word, s);
-}
-
-void increase_word_counter(MapEntry **map, char *word) {
-    MapEntry *entry = NULL;
-    HASH_FIND_STR(*map, word, entry);
-    
-    if(entry != NULL) {
-        entry->counts += 1;
     } else {
-        add_word(map, word, 1);
+        int size = HASH_COUNT(*local_map), i = 0;
+
+        // Flattening of own Hashmap
+        MapEntry *list_to_send = malloc(sizeof(MapEntry) * size);
+        for(MapEntry *e = *local_map; e != NULL; e = e->hh.next)
+            list_to_send[i++] = *e;
+        
+        // Sends the size of its map
+        if((rc = MPI_Send(&size, 1, MPI_INT, MASTER, count_tag, MPI_COMM_WORLD)) != MPI_SUCCESS)
+            return rc;
+        // Sends the map using a resized datatype to skip one parameter of the struct
+        if((rc = MPI_Send(list_to_send, size, couple_type_resized, MASTER, send_tag, MPI_COMM_WORLD)) != MPI_SUCCESS)
+            return rc;
+
+        free(list_to_send);
     }
 
+    return rc;
 }
 
-int num_of_bytes_UTF8(char first_char) {
-    int byte = first_char & 0b11110000;
-    switch(byte) {
-        case 192: // Two bytes
-            return 2;
-        case 224: // Three bytes
-            return 3;
-        case 240: // Four bytes
-            return 4;
-        default:  // Not used
-            return 1;
-    }
+int receiveAndreduce(MapEntry **map, int size, int source, int tag, MPI_Datatype type) {
+    int rc = 0;
+    Couple *buf = malloc(sizeof(Couple) * size);
+            
+    if((rc = MPI_Recv(buf, size, type, source, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+        return rc;
+    
+    for(int i = 0; i < size; i++)
+        increase_word_counter(map, buf[i].word, buf[i].counts);  
+    free(buf);
+
+    return rc;
+}
+
+int map_cmp(MapEntry *a, MapEntry *b) {
+    return (b->counts - a->counts);
 }
