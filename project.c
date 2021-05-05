@@ -39,13 +39,15 @@ typedef struct {
 } Couple;
 
 // Utility functions
+void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pindexes, int total_size, int filenum, FileInfo *files);
 void add_word(MapEntry **map, char* word, int counts);
 void increase_word_counter(MapEntry **map, char *word, int counts);
 int num_of_bytes_UTF8(char first_char);
-int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path);
+int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank);
 int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int count_tag, int send_tag, MPI_Datatype couple_type, MPI_Datatype couple_type_resized);
 int receiveAndreduce(MapEntry **map, int size, int source, int tag, MPI_Datatype type);
 int map_cmp(MapEntry *a, MapEntry *b);
+int create_csv(char *filename, MapEntry *map);
 
 int main(int argc, char **argv) {
     // All processes
@@ -138,7 +140,7 @@ int main(int argc, char **argv) {
         int size = 0;
         total_size = 0;
 
-        // FileInfo reading
+        // FileInfo reading (directory reading)
         while((in_file = readdir(FD))) {
             char file[256] = {'\0'};
 
@@ -161,57 +163,25 @@ int main(int argc, char **argv) {
             files[size - 1].size_in_bytes = buf.st_size;
             total_size += buf.st_size;
             
+            // For debugging purpose
             printf("%s - %ld\n", in_file->d_name, buf.st_size);
         }
 
-        printf("File read: %d\n", size);
-        printf("Size in bytes: %ld\n", total_size);
-
+        // For debugging purpose
         batch_size = total_size / numtasks;
         remainder = total_size % batch_size;
-
+        printf("File read: %d\n", size);
+        printf("Size in bytes: %ld\n", total_size);
         printf("batch_size: %ld\n", batch_size);
 
+        // Files schedulation
         offsets = malloc(sizeof(int) * numtasks);
         displs = malloc(sizeof(int) * numtasks);
-        
         pindexes = malloc(sizeof(ProcessIndex) * numtasks);
+        
+        file_scheduling(numtasks, offsets, displs, pindexes, total_size, size, files);
 
-        off_t next = 0;
-        off_t nextfile_size = files[0].size_in_bytes;
-        // Files schedulation
-        for(int i = 0, j = 0; i < numtasks; i++) {
-            pindexes[i].start_offset = next;  // Process i begin offset
-            displs[i] = j;
-            offsets[i] = 0;
-
-            int mybatch = batch_size + ((remainder > i));   // Bytes of process i
-            
-            while(j < size && mybatch > 0) {
-                offsets[i] += 1;                // Assegna il file j al processore i
-                
-                if(mybatch <= nextfile_size) {       
-                    pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // Calcolo la posizione in cui sono arrivato nell'ultimo file 
-                    next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       // Offset di partenza del prossimo processo
-                    nextfile_size -= mybatch;
-
-                    // We don't need to procede to next file
-                    if(nextfile_size != 0) {
-                        break;
-                    }
-                    mybatch = 0;    // To exit from the cycle
-                }
-                
-                mybatch -= nextfile_size;
-                j += 1; // Pass to next file
-                if(j < size)
-                    nextfile_size = files[j].size_in_bytes; //Next file's size
-
-            }
-
-            pindexes[i].numfiles = offsets[i];
-        }
-
+        // For debugging purpose
         printf("Displs: ");
         for(int i = 0; i < numtasks; i++) {
             printf("%d ", displs[i]);
@@ -239,7 +209,7 @@ int main(int argc, char **argv) {
         return rc;
 
     // Computation and word mapping
-    if((rc = computeAndMap(recvfiles, pindex.numfiles, pindex.start_offset, pindex.end_offset, &local_map, argv[1])) != 0) {
+    if((rc = computeAndMap(recvfiles, pindex.numfiles, pindex.start_offset, pindex.end_offset, &local_map, argv[1], rank)) != 0) {
         fprintf(stderr, "Computation error, error code: %d\n", rc);
 
         return EXIT_FAILURE;
@@ -247,7 +217,6 @@ int main(int argc, char **argv) {
     
     printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
 
-    //TODO: generazione csv file da parte del master
     //TODO: riordinare e sistemare il codice in maniera più pulita e leggibile
     //TODO: Vedere cos'altro fare
 
@@ -259,8 +228,15 @@ int main(int argc, char **argv) {
     if(rank == MASTER) {
         HASH_SORT(master_map, map_cmp);
         printf("Num: %d\n", HASH_COUNT(master_map));
+        /*
         for(MapEntry *p = master_map; p != NULL; p = p->hh.next) 
             printf("%s %d\n", p->word, p->counts);
+        */
+       if((rc = create_csv(argv[1], master_map)) != 0) {
+           fprintf(stderr, "Error in csv file creation\n");
+
+           return rc;
+       }
     }
 
     fflush(stdout);
@@ -296,6 +272,42 @@ int main(int argc, char **argv) {
 
 // Functions
 
+void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pindexes, int total_size, int numfiles, FileInfo *files) {
+    int batch_size = total_size / numtasks;
+    int remainder = total_size % batch_size;
+    off_t next = 0;
+    off_t nextfile_size = files[0].size_in_bytes;
+
+    // Files schedulation
+    for(int i = 0, j = 0; i < numtasks; i++) { // i - processes index, j - files index
+        pindexes[i].start_offset = next;  // Process i begin offset
+        displs[i] = j;
+        offsets[i] = 0;
+        int mybatch = batch_size + ((remainder > i));   // Bytes of process i
+        
+        while(j < numfiles && mybatch > 0) {
+            offsets[i] += 1;                // Assegna il file j al processore i
+            
+            if(mybatch <= nextfile_size) {       
+                pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // Calcolo la posizione in cui sono arrivato nell'ultimo file 
+                next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       // Offset di partenza del prossimo processo
+                nextfile_size -= mybatch;
+                // We don't need to procede to next file
+                if(nextfile_size != 0) {
+                    break;
+                }
+                mybatch = 0;    // To exit from the cycle
+            }
+            
+            mybatch -= nextfile_size;
+            j += 1; // Pass to next file
+            if(j < numfiles)
+                nextfile_size = files[j].size_in_bytes; //Next file's size
+        }
+        pindexes[i].numfiles = offsets[i];
+    }
+}
+
 void add_word(MapEntry **map, char* word_str, int counts) {
     MapEntry *s = malloc(sizeof(MapEntry));
     
@@ -329,7 +341,7 @@ int num_of_bytes_UTF8(char first_char) {
     }
 }
 
-int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path) {
+int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
     FILE *fp;
     char filename[FILENAME_SIZE];
     char readbuf[READ_BUF] = {'\0'};
@@ -380,14 +392,16 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
             // Reading from the buffer
             for(; *p && p < readbuf + READ_BUF; p++) {
                 rd += 1;
-                
+
                 if(isalpha(*p)) {   // One byte char
                     currentWord[currentWordSize++] = tolower(*p); // Legge carattere per carattere
                 } else if(*p < 0) { // Multi byte char
                     int len = num_of_bytes_UTF8(*p);
-                    for(int j = 0; j < len; j++)
+                    for(int j = 0; j < len; j++) {
                         currentWord[currentWordSize++] = tolower(*(p + j));
+                    }
                     p += (len - 1);
+                    rd += (len - 1); // Remeber to update rd variable
                 } else if(currentWordSize > 0) { // Word ended
                     // Ho una parola
                     currentWord[currentWordSize] = '\0';
@@ -511,4 +525,28 @@ int receiveAndreduce(MapEntry **map, int size, int source, int tag, MPI_Datatype
 
 int map_cmp(MapEntry *a, MapEntry *b) {
     return (b->counts - a->counts);
+}
+
+int create_csv(char *filename, MapEntry *map) {
+    char file[FILENAME_SIZE] = {'\0'};
+    FILE *fp;
+
+    strcat(file, filename);
+    strcat(file, ".csv");
+
+    if((fp = fopen(file, "w")) == NULL) {
+        fprintf(stderr, "Error: fopen error on csv file\n");
+            
+        return EXIT_FAILURE;
+    }
+
+    fprintf(fp, "Word,Frequency\n");
+
+    for(MapEntry *e = map; e != NULL; e = e->hh.next) {
+        fprintf(fp, "%s,%d\n", e->word, e->counts);
+    } 
+
+    fclose(fp);
+
+    return 0;
 }
