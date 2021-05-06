@@ -16,37 +16,145 @@
 #define MASTER 0
 
 // Structures
+
+/* contains the required info for describing a file*/
 typedef struct {
     char filename[FILENAME_SIZE];
     off_t size_in_bytes;
 } FileInfo;
 
+/* The info required from a process to know its section of data */
 typedef struct {
     off_t start_offset;
     off_t end_offset;
     int numfiles;
 } ProcessIndex;
 
+/* A entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
 typedef struct {
     char word[WORD_SIZE];           /* key */
     int counts;
     UT_hash_handle hh;  /* makes this structure hashable */ 
 } MapEntry;
 
+/* A struct which represents a simple couple string-int */
 typedef struct {
     char word[WORD_SIZE];
     int counts;
 } Couple;
 
 // Utility functions
+
+/**
+ * @brief Splits up the files between the numtasks processors
+ * 
+ * @param numtasks the number of processors and size od the offsets, displs and pindexes arrays
+ * @param offsets an array of size 'numtasks', which will contain the number of file assigned to processors
+ * @param displs an array of size 'numtasks', which will contain the displacements of processors respect to files
+ * @param pindexes an array of size 'numtasks', which will contain the required info for every process
+ * @param total_size the total size of files in bytes used to compute batch size. Every processor will be given at least total_size/numtasks bytes
+ * @param filenum the size of the files array 
+ * @param files an array of size 'filenum' 
+ */
 void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pindexes, int total_size, int filenum, FileInfo *files);
+
+/**
+ * @brief Adds the key to the hash with the passed value
+ * 
+ * @param map the hash
+ * @param word the key
+ * @param counts the value 
+ */
 void add_word(MapEntry **map, char* word, int counts);
+
+/**
+ * @brief Increases the value of the entry with the passed key, or creates it if necessary
+ * 
+ * @param map the hash
+ * @param word the key
+ * @param counts the value to add to old value
+ */
 void increase_word_counter(MapEntry **map, char *word, int counts);
+
+/**
+ * @brief Calculate the number of bytes of the character using UTF-8
+ * 
+ * @param first_char char
+ * @return int value between 1 and 4
+ */
 int num_of_bytes_UTF8(char first_char);
+
+/**
+ * @brief Checks if is a symbol
+ * 
+ * @param ch 
+ * @return [0-1]
+ */
+int issymbol(char ch) {
+    return ch == '\'' || ch == '-';
+}
+
+/**
+ * @brief Reads all words in the section of data passed and puts them in the hash
+ * 
+ * @param files list of file to read
+ * @param num_files the number of files
+ * @param start_offset the starting offset of the fist file
+ * @param end_offset the ending offset of the last file
+ * @param map the hash
+ * @param dir_path the dir path in which files are stored
+ * @param rank (Used for debugging)
+ * @return int 0 if is all okay, non-zero number otherwise
+ */
 int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank);
-int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int count_tag, int send_tag, MPI_Datatype couple_type, MPI_Datatype couple_type_resized);
-int receiveAndreduce(MapEntry **map, int size, int source, int tag, MPI_Datatype type);
+
+/**
+ * @brief All processes send their data to the master, then the master collects them and reduces them in
+ * only one hash
+ * 
+ * @param master_map the hash used to collect all data (only used by the master)
+ * @param master the rank of the master
+ * @param recv_type datatype used to recv data (only used by the master)
+ * @param local_map the map to send to the master
+ * @param rank the rank of the process
+ * @param send_type datatype used to send data 
+ * @param numtasks the total number of processes in the comm
+ * @param size_tag tag used for the messages which processes use to specify the size of the data to send
+ * @param send_tag tag used to send the real data
+ * @param comm the communicator used
+ * @return int 0 if it's all okay, non-zero otherwise
+ */
+int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type, MapEntry **local_map, int rank, MPI_Datatype send_type, int numtasks, int size_tag, int send_tag, MPI_Comm comm);
+
+/**
+ * @brief Utility function which handles the receive of a list of couple from a process
+ * 
+ * @param map the hash in which the couples will be added
+ * @param size the number of couples to receive
+ * @param source the process from which receives the data
+ * @param tag the tag used in the communication
+ * @param type the datatype used 
+ * @param comm the communicator used
+ * @return int 0 if it's all okay, non-zero otherwise
+ */
+int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Datatype type, MPI_Comm comm);
+
+/**
+ * @brief Compares two Map Entry using counts 
+ * 
+ * @param a Map entry
+ * @param b Map entry
+ * @return int 0 if are equals, > 0 if a is less frequent than b, < 0 otherwise
+ */
 int map_cmp(MapEntry *a, MapEntry *b);
+
+/**
+ * @brief Create a csv file
+ * 
+ * @param filename name of the file
+ * @param map the map will be written in the file
+ * @return int 0 if it's all okay, non-zero otherwise
+ */
 int create_csv(char *filename, MapEntry *map);
 
 int main(int argc, char **argv) {
@@ -120,7 +228,9 @@ int main(int argc, char **argv) {
     displacements[1] = blocklengths[0] * extent;
     
     MPI_Type_create_struct(2, blocklengths, displacements, types, &couple_type);
-    MPI_Type_commit(&couple_type);    
+    MPI_Type_commit(&couple_type);
+
+    // Couple struct resized     
     MPI_Type_get_extent(couple_type, &lb, &extent);
     MPI_Type_create_resized(couple_type, lb, sizeof(MapEntry), &couple_type_resized);
     MPI_Type_commit(&couple_type_resized);    
@@ -221,8 +331,8 @@ int main(int argc, char **argv) {
     //TODO: Vedere cos'altro fare
 
 
-    // Gathering and Reduce (TODO: Aggiustare nome funzione e parametri)
-    if((rc = gatheringAndReduce(&master_map, MASTER, &local_map, rank, numtasks, count_tag, send_tag, couple_type, couple_type_resized)) != MPI_SUCCESS)
+    // Gathering and Reduce
+    if((rc = gatheringAndReduce(&master_map, MASTER, couple_type, &local_map, rank, couple_type_resized, numtasks, count_tag, send_tag, MPI_COMM_WORLD)) != MPI_SUCCESS)
         return rc;
 
     if(rank == MASTER) {
@@ -258,6 +368,7 @@ int main(int argc, char **argv) {
             next = e->hh.next;
             free(e);
         }
+
     }
 
     // Free hash
@@ -367,8 +478,8 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
             return EXIT_FAILURE;
         }
 
-        char currentWord[WORD_SIZE] = {'\0'};
-        int currentWordSize = 0, jump = 0, done = 0;
+        char current_word[WORD_SIZE] = {'\0'};
+        int current_word_size = 0, jump = 0, done = 0;
        
         // File reading
         while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump boolean variable to skip the cycle
@@ -376,7 +487,7 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
             if(!done && i == 0 && offset > 0) {  // To handle word conflicts between processes
                 rd -= 1;
                 
-                while(isalpha(*p) || *p < 0) {// oppure è un carattere UTF-8 con più bytes
+                while(isalpha(*p) || *p < 0 || issymbol(*p)) {// oppure è un carattere UTF-8 con più bytes oppure è un simbolo
                     p += 1;
                     rd += 1;
                 }
@@ -392,38 +503,42 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
             // Reading from the buffer
             for(; *p && p < readbuf + READ_BUF; p++) {
                 rd += 1;
-
+                
                 if(isalpha(*p)) {   // One byte char
-                    currentWord[currentWordSize++] = tolower(*p); // Legge carattere per carattere
+                    current_word[current_word_size++] = tolower(*p); // Legge carattere per carattere
                 } else if(*p < 0) { // Multi byte char
                     int len = num_of_bytes_UTF8(*p);
                     for(int j = 0; j < len; j++) {
-                        currentWord[currentWordSize++] = tolower(*(p + j));
+                        current_word[current_word_size++] = tolower(*(p + j));
                     }
                     p += (len - 1);
-                    rd += (len - 1); // Remeber to update rd variable
-                } else if(currentWordSize > 0) { // Word ended
+                    rd += (len - 1); // Remember to update rd variable
+                } else if(current_word_size > 0 && issymbol(*p) && !issymbol(current_word[current_word_size - 1])) {
+                    current_word[current_word_size++] = *p;
+                } else if(current_word_size > 0) { // Word ended
                     // Ho una parola
-                    currentWord[currentWordSize] = '\0';
-                    increase_word_counter(map, currentWord, 1);
-                    currentWord[0] = '\0';
-                    currentWordSize = 0;
-                    
-                    if(i  == num_files - 1 && (rd + offset > end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
-                        jump = 1;   // boolean flag to skip the outer cycle
-                        break;
-                    }
+                    current_word[current_word_size] = '\0';
+                    increase_word_counter(map, current_word, 1);
+                    current_word[0] = '\0';
+                    current_word_size = 0;    
                 }
+
+                // If I don't have a word and I have gone beyond the end_offset I can stop
+                if(i == (num_files - 1) && current_word_size == 0 && (rd + offset > end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
+                    jump = 1;   // boolean flag to skip the outer cycle
+                    break;
+                }
+
             }
             readbuf[0] = '\0';  // Buffer reset
         }
 
         // If I end to read the file and there is still a word in currentWord buffer
-        if(currentWordSize > 0) {
-            currentWord[currentWordSize] = '\0';
-            increase_word_counter(map, currentWord, 1);
-            currentWord[0] = '\0';
-            currentWordSize = 0;
+        if(current_word_size > 0) {
+            current_word[current_word_size] = '\0';
+            increase_word_counter(map, current_word, 1);
+            current_word[0] = '\0';
+            current_word_size = 0;
         }
 
         fclose(fp);
@@ -434,7 +549,7 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
     return 0;
 }
 
-int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int count_tag, int send_tag, MPI_Datatype couple_type, MPI_Datatype couple_type_resized) {
+int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type, MapEntry **local_map, int rank, MPI_Datatype send_type, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
     int rc = 0;
     
     if(rank == master) {
@@ -442,12 +557,12 @@ int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, 
         MPI_Request *reqs = malloc(sizeof(MPI_Request) * (numtasks - 1));
         int *counts = malloc(sizeof(int) * (numtasks - 1));
 
-        // Post for counts
+        // Post for size
         for(int p = 0, i = 0; p < numtasks; p++) {
             if(p == master)
                 continue;
             
-            if((rc = MPI_Irecv(counts + i, 1, MPI_INT, p, count_tag, MPI_COMM_WORLD, reqs + i)) != MPI_SUCCESS)
+            if((rc = MPI_Irecv(counts + i, 1, MPI_INT, p, size_tag, comm, reqs + i)) != MPI_SUCCESS)
                 return rc;
             i += 1;
         }
@@ -463,7 +578,7 @@ int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, 
                 return rc;
             
             if(index != MPI_UNDEFINED) {
-                if((rc = receiveAndreduce(master_map, counts[index], index + 1, send_tag, couple_type)) != MPI_SUCCESS)
+                if((rc = receiveMap(master_map, counts[index], index + 1, send_tag, recv_type, comm)) != MPI_SUCCESS)
                     return rc;
 
                 received += 1;
@@ -479,7 +594,7 @@ int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, 
             if((rc = MPI_Waitany(numtasks - 1, reqs, &index, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
                 return rc;
             // Gains and reduces the data
-            if((rc = receiveAndreduce(master_map, counts[index], index + 1, send_tag, couple_type)) != MPI_SUCCESS)
+            if((rc = receiveMap(master_map, counts[index], index + 1, send_tag, recv_type, comm)) != MPI_SUCCESS)
                 return rc;
 
             received += 1; // Updates counter
@@ -497,10 +612,10 @@ int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, 
             list_to_send[i++] = *e;
         
         // Sends the size of its map
-        if((rc = MPI_Send(&size, 1, MPI_INT, MASTER, count_tag, MPI_COMM_WORLD)) != MPI_SUCCESS)
+        if((rc = MPI_Send(&size, 1, MPI_INT, MASTER, size_tag, comm)) != MPI_SUCCESS)
             return rc;
         // Sends the map using a resized datatype to skip one parameter of the struct
-        if((rc = MPI_Send(list_to_send, size, couple_type_resized, MASTER, send_tag, MPI_COMM_WORLD)) != MPI_SUCCESS)
+        if((rc = MPI_Ssend(list_to_send, size, send_type, MASTER, send_tag, comm)) != MPI_SUCCESS)
             return rc;
 
         free(list_to_send);
@@ -509,11 +624,11 @@ int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, 
     return rc;
 }
 
-int receiveAndreduce(MapEntry **map, int size, int source, int tag, MPI_Datatype type) {
+int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Datatype type, MPI_Comm comm) {
     int rc = 0;
     Couple *buf = malloc(sizeof(Couple) * size);
             
-    if((rc = MPI_Recv(buf, size, type, source, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+    if((rc = MPI_Recv(buf, size, type, source, tag, comm, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
         return rc;
     
     for(int i = 0; i < size; i++)
