@@ -1,0 +1,9 @@
+Questo file è un semplice file 
+di 
+test 
+con   alcuni    caratteri      newline e                           spazi
+
+
+giusto per 
+controllare              che  tutto funzioni 
+correttamente.

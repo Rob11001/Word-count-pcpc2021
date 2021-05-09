@@ -49,14 +49,14 @@ typedef struct {
  * @brief Splits up the files between the numtasks processors
  * 
  * @param numtasks the number of processors and size od the offsets, displs and pindexes arrays
- * @param offsets an array of size 'numtasks', which will contain the number of file assigned to processors
+ * @param send_counts an array of size 'numtasks', which will contain the number of file assigned to processors
  * @param displs an array of size 'numtasks', which will contain the displacements of processors respect to files
  * @param pindexes an array of size 'numtasks', which will contain the required info for every process
  * @param total_size the total size of files in bytes used to compute batch size. Every processor will be given at least total_size/numtasks bytes
  * @param filenum the size of the files array 
  * @param files an array of size 'filenum' 
  */
-void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pindexes, int total_size, int filenum, FileInfo *files);
+void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *pindexes, int total_size, int filenum, FileInfo *files);
 
 /**
  * @brief Adds the key to the hash with the passed value
@@ -90,9 +90,15 @@ int num_of_bytes_UTF8(char first_char);
  * @param ch 
  * @return [0-1]
  */
-int issymbol(char ch) {
-    return ch == '\'' || ch == '-';
-}
+int issymbol(char ch);
+
+/**
+ * @brief Checks is is a symbol
+ * 
+ * @param ch 
+ * @return [0-1]
+ */
+int ismulticharsymbol(char *ch);
 
 /**
  * @brief Reads all words in the section of data passed and puts them in the hash
@@ -160,6 +166,7 @@ int create_csv(char *filename, MapEntry *map);
 int main(int argc, char **argv) {
     // All processes
     int rank, numtasks, send_tag = 1, count_tag = 2, rc;
+    double start, end;
     off_t batch_size, total_size, remainder;
     MPI_Datatype process_data, file_info, couple_type, couple_type_resized;
     MPI_Aint extent, lb;
@@ -175,7 +182,7 @@ int main(int argc, char **argv) {
     struct stat buf;
     FileInfo *files;
     ProcessIndex *pindexes;
-    int *offsets, *displs;
+    int *send_counts, *displs;
     MapEntry *master_map = NULL;
 
     if(argc != 2) {
@@ -254,10 +261,12 @@ int main(int argc, char **argv) {
         while((in_file = readdir(FD))) {
             char file[256] = {'\0'};
 
+            if(in_file->d_type != DT_REG)
+                continue;
             if (!strcmp (in_file->d_name, "."))
                 continue;
             if (!strcmp (in_file->d_name, ".."))    
-                continue;
+                continue;            
 
             size += 1;
             files = realloc(files, sizeof(FileInfo) * size);
@@ -285,11 +294,11 @@ int main(int argc, char **argv) {
         printf("batch_size: %ld\n", batch_size);
 
         // Files schedulation
-        offsets = malloc(sizeof(int) * numtasks);
+        send_counts = malloc(sizeof(int) * numtasks);
         displs = malloc(sizeof(int) * numtasks);
         pindexes = malloc(sizeof(ProcessIndex) * numtasks);
         
-        file_scheduling(numtasks, offsets, displs, pindexes, total_size, size, files);
+        file_scheduling(numtasks, send_counts, displs, pindexes, total_size, size, files);
 
         // For debugging purpose
         printf("Displs: ");
@@ -298,7 +307,7 @@ int main(int argc, char **argv) {
         }
         printf("\nOffsets: ");
         for(int i = 0; i < numtasks; i++) {
-            printf("%d ", offsets[i]);
+            printf("%d ", send_counts[i]);
         }
         printf("\nProcess indexes:");
         for(int i = 0; i < numtasks; i++) {
@@ -308,6 +317,13 @@ int main(int argc, char **argv) {
         
     }
 
+    printf("Execution task %d ...\n", rank);
+    fflush(stdout);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    start = MPI_Wtime();
+    /* ************************************************* */
+
     // Processes indexes 
     if((rc = MPI_Scatter(pindexes, 1, process_data, &pindex, 1, process_data, MASTER, MPI_COMM_WORLD)) != MPI_SUCCESS)
         return rc;
@@ -315,7 +331,7 @@ int main(int argc, char **argv) {
     FileInfo *recvfiles = malloc(sizeof(FileInfo) * pindex.numfiles);
     
     // Files info
-    if((rc = MPI_Scatterv(files, offsets, displs, file_info, recvfiles, pindex.numfiles, file_info, MASTER, MPI_COMM_WORLD))!= MPI_SUCCESS)
+    if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, MASTER, MPI_COMM_WORLD))!= MPI_SUCCESS)
         return rc;
 
     // Computation and word mapping
@@ -327,7 +343,6 @@ int main(int argc, char **argv) {
     
     printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
 
-    //TODO: riordinare e sistemare il codice in maniera più pulita e leggibile
     //TODO: Vedere cos'altro fare
 
 
@@ -349,6 +364,9 @@ int main(int argc, char **argv) {
        }
     }
 
+    /* ************************************************* */
+    MPI_Barrier(MPI_COMM_WORLD);
+    end = MPI_Wtime();
     fflush(stdout);
 
     MPI_Type_free(&process_data);
@@ -358,9 +376,13 @@ int main(int argc, char **argv) {
     MPI_Finalize();
 
     if(rank == MASTER) {
+        // Time
+        printf("Task %d -- Time in ms = %f\n", rank, end - start);
+        
+        // Deallocation
         free(files);
         free(displs);
-        free(offsets);
+        free(send_counts);
         free(pindexes);
 
         // Free hash
@@ -383,7 +405,7 @@ int main(int argc, char **argv) {
 
 // Functions
 
-void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pindexes, int total_size, int numfiles, FileInfo *files) {
+void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *pindexes, int total_size, int numfiles, FileInfo *files) {
     int batch_size = total_size / numtasks;
     int remainder = total_size % batch_size;
     off_t next = 0;
@@ -393,11 +415,11 @@ void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pind
     for(int i = 0, j = 0; i < numtasks; i++) { // i - processes index, j - files index
         pindexes[i].start_offset = next;  // Process i begin offset
         displs[i] = j;
-        offsets[i] = 0;
+        send_counts[i] = 0;
         int mybatch = batch_size + ((remainder > i));   // Bytes of process i
         
         while(j < numfiles && mybatch > 0) {
-            offsets[i] += 1;                // Assegna il file j al processore i
+            send_counts[i] += 1;                // Assegna il file j al processore i
             
             if(mybatch <= nextfile_size) {       
                 pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // Calcolo la posizione in cui sono arrivato nell'ultimo file 
@@ -415,7 +437,7 @@ void file_scheduling(int numtasks, int *offsets, int *displs, ProcessIndex *pind
             if(j < numfiles)
                 nextfile_size = files[j].size_in_bytes; //Next file's size
         }
-        pindexes[i].numfiles = offsets[i];
+        pindexes[i].numfiles = send_counts[i];
     }
 }
 
@@ -450,6 +472,15 @@ int num_of_bytes_UTF8(char first_char) {
         default:  // Not used
             return 1;
     }
+}
+
+
+int issymbol(char ch) {
+    return ch == '\'' || ch == '-';
+}
+
+int ismulticharsymbol(char *ch) {
+    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0;
 }
 
 int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
@@ -508,11 +539,28 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
                     current_word[current_word_size++] = tolower(*p); // Legge carattere per carattere
                 } else if(*p < 0) { // Multi byte char
                     int len = num_of_bytes_UTF8(*p);
-                    for(int j = 0; j < len; j++) {
-                        current_word[current_word_size++] = tolower(*(p + j));
+                    // checks current_word buffer overflow 
+                    if(current_word_size + len < WORD_SIZE - 1) {
+                        char ch[len + 1];
+                        for(int j = 0; j < len; j++) {
+                            ch[j] = *(p + j);
+                            current_word[current_word_size++] = tolower(*(p + j));
+                        }
+                        ch[len] = '\0';
+
+                        // If it's a symbol, it can be skipped
+                        if(ismulticharsymbol(ch)) {
+                            current_word_size -= len;
+                        }
+
+                        p += (len - 1);
+                        rd += (len - 1); // Remember to update rd variable
+                    } else {
+                        p -= 1;
+                        rd -= 1;
+                        current_word[current_word_size] = '\0';
+                        current_word_size = WORD_SIZE - 1;
                     }
-                    p += (len - 1);
-                    rd += (len - 1); // Remember to update rd variable
                 } else if(current_word_size > 0 && issymbol(*p) && !issymbol(current_word[current_word_size - 1])) {
                     current_word[current_word_size++] = *p;
                 } else if(current_word_size > 0) { // Word ended
@@ -521,6 +569,14 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
                     increase_word_counter(map, current_word, 1);
                     current_word[0] = '\0';
                     current_word_size = 0;    
+                }
+
+                // checks current_word buffer overflow 
+                if(current_word_size == WORD_SIZE - 1) {
+                        current_word[current_word_size] = '\0';
+                        increase_word_counter(map, current_word, 1);
+                        current_word[0] = '\0';
+                        current_word_size = 0;
                 }
 
                 // If I don't have a word and I have gone beyond the end_offset I can stop
