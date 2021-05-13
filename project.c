@@ -166,6 +166,7 @@ int create_csv(char *filename, MapEntry *map);
 int main(int argc, char **argv) {
     // All processes
     int rank, numtasks, send_tag = 1, count_tag = 2, rc;
+    int degree = 1, *dest, master = MASTER;
     double start, end;
     off_t batch_size, total_size, remainder;
     MPI_Datatype process_data, file_info, couple_type, couple_type_resized;
@@ -175,6 +176,8 @@ int main(int argc, char **argv) {
     MPI_Aint displacements[3];
     ProcessIndex pindex;
     MapEntry *local_map = NULL;
+    MPI_Group graph_group, world_group;
+    MPI_Comm graph_comm;
 
     // Master only
     DIR* FD;
@@ -245,8 +248,32 @@ int main(int argc, char **argv) {
     // Comm info
     MPI_Comm_size(MPI_COMM_WORLD, &numtasks);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
+    
+    // Graph topology construction
     if(rank == MASTER) {
+        degree = numtasks - 1;
+        dest = malloc(sizeof(int) *degree);
+        for(int i = 0, j = 0; i < numtasks; i++)
+            if(i != rank)
+                dest[j++] = i;
+    } else {
+        dest = malloc(sizeof(int));
+        *dest = MASTER;
+    }
+
+    if((rc = MPI_Dist_graph_create(MPI_COMM_WORLD, 1, &rank, &degree, dest, MPI_UNWEIGHTED, MPI_INFO_NULL, 1, &graph_comm)) != MPI_SUCCESS)
+        return rc;
+    
+    free(dest);
+
+    // Ranks' updating
+    MPI_Comm_group(graph_comm, &graph_group);
+    MPI_Comm_group(MPI_COMM_WORLD, &world_group);
+    MPI_Group_translate_ranks(world_group, 1, &master, graph_group, &master); 
+    MPI_Comm_rank(graph_comm, &rank);  
+
+    // Master reads input directory
+    if(rank == master) {
         if((FD = opendir(argv[1])) == NULL) {
             fprintf(stderr, "Error : Failed to open input directory\n");
 
@@ -320,18 +347,18 @@ int main(int argc, char **argv) {
     printf("Execution task %d ...\n", rank);
     fflush(stdout);
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(graph_comm);
     start = MPI_Wtime();
     /* ************************************************* */
 
     // Processes indexes 
-    if((rc = MPI_Scatter(pindexes, 1, process_data, &pindex, 1, process_data, MASTER, MPI_COMM_WORLD)) != MPI_SUCCESS)
+    if((rc = MPI_Scatter(pindexes, 1, process_data, &pindex, 1, process_data, master, graph_comm)) != MPI_SUCCESS)
         return rc;
     
     FileInfo *recvfiles = malloc(sizeof(FileInfo) * pindex.numfiles);
     
     // Files info
-    if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, MASTER, MPI_COMM_WORLD))!= MPI_SUCCESS)
+    if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, master, graph_comm))!= MPI_SUCCESS)
         return rc;
 
     // Computation and word mapping
@@ -347,25 +374,25 @@ int main(int argc, char **argv) {
 
 
     // Gathering and Reduce
-    if((rc = gatheringAndReduce(&master_map, MASTER, couple_type, &local_map, rank, couple_type_resized, numtasks, count_tag, send_tag, MPI_COMM_WORLD)) != MPI_SUCCESS)
+    if((rc = gatheringAndReduce(&master_map, master, couple_type, &local_map, rank, couple_type_resized, numtasks, count_tag, send_tag, graph_comm)) != MPI_SUCCESS)
         return rc;
 
-    if(rank == MASTER) {
+    if(rank == master) {
         HASH_SORT(master_map, map_cmp);
-        printf("Num: %d\n", HASH_COUNT(master_map));
-        /*
-        for(MapEntry *p = master_map; p != NULL; p = p->hh.next) 
-            printf("%s %d\n", p->word, p->counts);
-        */
-       if((rc = create_csv(argv[1], master_map)) != 0) {
-           fprintf(stderr, "Error in csv file creation\n");
-
-           return rc;
-       }
+        int tot = 0;
+        for(MapEntry *e = master_map; e != NULL; e = e->hh.next) {
+            tot += e->counts;
+        }
+        printf("Unique-words: %d, Total words: %d\n", HASH_COUNT(master_map), tot);
+        
+        if((rc = create_csv(argv[1], master_map)) != 0) {
+            fprintf(stderr, "Error in csv file creation\n");
+            return rc;
+        }
     }
 
     /* ************************************************* */
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(graph_comm);
     end = MPI_Wtime();
     fflush(stdout);
 
@@ -373,9 +400,12 @@ int main(int argc, char **argv) {
     MPI_Type_free(&file_info);
     MPI_Type_free(&couple_type);
     MPI_Type_free(&couple_type_resized);
+    MPI_Comm_free(&graph_comm);
+    MPI_Group_free(&graph_group);
+    MPI_Group_free(&world_group);
     MPI_Finalize();
 
-    if(rank == MASTER) {
+    if(rank == master) {
         // Time
         printf("Task %d -- Time in ms = %f\n", rank, end - start);
         
@@ -668,10 +698,10 @@ int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type
             list_to_send[i++] = *e;
         
         // Sends the size of its map
-        if((rc = MPI_Send(&size, 1, MPI_INT, MASTER, size_tag, comm)) != MPI_SUCCESS)
+        if((rc = MPI_Send(&size, 1, MPI_INT, master, size_tag, comm)) != MPI_SUCCESS)
             return rc;
         // Sends the map using a resized datatype to skip one parameter of the struct
-        if((rc = MPI_Ssend(list_to_send, size, send_type, MASTER, send_tag, comm)) != MPI_SUCCESS)
+        if((rc = MPI_Ssend(list_to_send, size, send_type, master, send_tag, comm)) != MPI_SUCCESS)
             return rc;
 
         free(list_to_send);
