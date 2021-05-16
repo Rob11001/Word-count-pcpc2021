@@ -12,7 +12,7 @@
 
 #define FILENAME_SIZE 256
 #define READ_BUF 1024
-#define WORD_SIZE 256
+#define WORD_SIZE 100
 #define MASTER 0
 
 // Structures
@@ -664,7 +664,7 @@ int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type
                 return rc;
             
             if(index != MPI_UNDEFINED) {
-                if((rc = receiveMap(master_map, counts[index], index + 1, send_tag, recv_type, comm)) != MPI_SUCCESS)
+                if((rc = receiveMap(master_map, counts[index], (index >= master) ? index + 1 : index, send_tag, recv_type, comm)) != MPI_SUCCESS)
                     return rc;
 
                 received += 1;
@@ -680,7 +680,7 @@ int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type
             if((rc = MPI_Waitany(numtasks - 1, reqs, &index, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
                 return rc;
             // Gains and reduces the data
-            if((rc = receiveMap(master_map, counts[index], index + 1, send_tag, recv_type, comm)) != MPI_SUCCESS)
+            if((rc = receiveMap(master_map, counts[index], (index >= master) ? index + 1 : index, send_tag, recv_type, comm)) != MPI_SUCCESS)
                 return rc;
 
             received += 1; // Updates counter
