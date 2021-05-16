@@ -32,16 +32,10 @@ typedef struct {
 
 /* A entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
 typedef struct {
-    char word[WORD_SIZE];           /* key */
+    char* word;           /* key */
     int counts;
     UT_hash_handle hh;  /* makes this structure hashable */ 
 } MapEntry;
-
-/* A struct which represents a simple couple string-int */
-typedef struct {
-    char word[WORD_SIZE];
-    int counts;
-} Couple;
 
 // Utility functions
 
@@ -120,30 +114,27 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
  * 
  * @param master_map the hash used to collect all data (only used by the master)
  * @param master the rank of the master
- * @param recv_type datatype used to recv data (only used by the master)
  * @param local_map the map to send to the master
  * @param rank the rank of the process
- * @param send_type datatype used to send data 
  * @param numtasks the total number of processes in the comm
  * @param size_tag tag used for the messages which processes use to specify the size of the data to send
  * @param send_tag tag used to send the real data
  * @param comm the communicator used
  * @return int 0 if it's all okay, non-zero otherwise
  */
-int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type, MapEntry **local_map, int rank, MPI_Datatype send_type, int numtasks, int size_tag, int send_tag, MPI_Comm comm);
+int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm);
 
 /**
  * @brief Utility function which handles the receive of a list of couple from a process
  * 
  * @param map the hash in which the couples will be added
- * @param size the number of couples to receive
+ * @param size the size of the packed message
  * @param source the process from which receives the data
  * @param tag the tag used in the communication
- * @param type the datatype used 
  * @param comm the communicator used
  * @return int 0 if it's all okay, non-zero otherwise
  */
-int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Datatype type, MPI_Comm comm);
+int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Comm comm);
 
 /**
  * @brief Compares two Map Entry using counts 
@@ -169,7 +160,7 @@ int main(int argc, char **argv) {
     int degree = 1, *dest, master = MASTER;
     double start, end;
     off_t batch_size, total_size, remainder;
-    MPI_Datatype process_data, file_info, couple_type, couple_type_resized;
+    MPI_Datatype process_data, file_info;
     MPI_Aint extent, lb;
     int blocklengths[3];
     MPI_Datatype types[3];
@@ -228,23 +219,6 @@ int main(int argc, char **argv) {
     MPI_Type_create_struct(2, blocklengths, displacements, types, &file_info);
     MPI_Type_commit(&file_info);
 
-    // Couple struct
-    blocklengths[0] = WORD_SIZE;
-    types[0] = MPI_CHAR;
-    displacements[0] = 0;
-
-    blocklengths[1] = 1;
-    types[1] = MPI_INT;
-    displacements[1] = blocklengths[0] * extent;
-    
-    MPI_Type_create_struct(2, blocklengths, displacements, types, &couple_type);
-    MPI_Type_commit(&couple_type);
-
-    // Couple struct resized     
-    MPI_Type_get_extent(couple_type, &lb, &extent);
-    MPI_Type_create_resized(couple_type, lb, sizeof(MapEntry), &couple_type_resized);
-    MPI_Type_commit(&couple_type_resized);    
-    
     // Comm info
     MPI_Comm_size(MPI_COMM_WORLD, &numtasks);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -370,11 +344,8 @@ int main(int argc, char **argv) {
     
     printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
 
-    //TODO: Vedere cos'altro fare
-
-
     // Gathering and Reduce
-    if((rc = gatheringAndReduce(&master_map, master, couple_type, &local_map, rank, couple_type_resized, numtasks, count_tag, send_tag, graph_comm)) != MPI_SUCCESS)
+    if((rc = gatheringAndReduce(&master_map, master, &local_map, rank, numtasks, count_tag, send_tag, graph_comm)) != MPI_SUCCESS)
         return rc;
 
     if(rank == master) {
@@ -387,8 +358,10 @@ int main(int argc, char **argv) {
         
         if((rc = create_csv(argv[1], master_map)) != 0) {
             fprintf(stderr, "Error in csv file creation\n");
+        
             return rc;
         }
+
     }
 
     /* ************************************************* */
@@ -398,8 +371,6 @@ int main(int argc, char **argv) {
 
     MPI_Type_free(&process_data);
     MPI_Type_free(&file_info);
-    MPI_Type_free(&couple_type);
-    MPI_Type_free(&couple_type_resized);
     MPI_Comm_free(&graph_comm);
     MPI_Group_free(&graph_group);
     MPI_Group_free(&world_group);
@@ -417,14 +388,15 @@ int main(int argc, char **argv) {
 
         // Free hash
         for(MapEntry *e = master_map, *next; e != NULL; e = next) {
+            free(e->word);
             next = e->hh.next;
             free(e);
         }
 
     }
 
-    // Free hash
     for(MapEntry *e = local_map, *next; e != NULL; e = next) {
+        free(e->word);
         next = e->hh.next;
         free(e);
     }
@@ -474,7 +446,7 @@ void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *
 void add_word(MapEntry **map, char* word_str, int counts) {
     MapEntry *s = malloc(sizeof(MapEntry));
     
-    strcpy(s->word, word_str);
+    s->word = strdup(word_str);
     s->counts = counts;
 
     HASH_ADD_STR(*map, word, s);
@@ -635,20 +607,20 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
     return 0;
 }
 
-int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type, MapEntry **local_map, int rank, MPI_Datatype send_type, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
+int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
     int rc = 0;
     
     if(rank == master) {
         // Request and counts
         MPI_Request *reqs = malloc(sizeof(MPI_Request) * (numtasks - 1));
-        int *counts = malloc(sizeof(int) * (numtasks - 1));
+        int *bufsizes = malloc(sizeof(int) * (numtasks - 1));
 
         // Post for size
         for(int p = 0, i = 0; p < numtasks; p++) {
             if(p == master)
                 continue;
             
-            if((rc = MPI_Irecv(counts + i, 1, MPI_INT, p, size_tag, comm, reqs + i)) != MPI_SUCCESS)
+            if((rc = MPI_Irecv(bufsizes + i, 1, MPI_INT, p, size_tag, comm, reqs + i)) != MPI_SUCCESS)
                 return rc;
             i += 1;
         }
@@ -664,7 +636,7 @@ int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type
                 return rc;
             
             if(index != MPI_UNDEFINED) {
-                if((rc = receiveMap(master_map, counts[index], (index >= master) ? index + 1 : index, send_tag, recv_type, comm)) != MPI_SUCCESS)
+                if((rc = receiveMap(master_map, bufsizes[index], (index >= master) ? index + 1 : index, send_tag, comm)) != MPI_SUCCESS)
                     return rc;
 
                 received += 1;
@@ -680,45 +652,69 @@ int gatheringAndReduce(MapEntry **master_map, int master, MPI_Datatype recv_type
             if((rc = MPI_Waitany(numtasks - 1, reqs, &index, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
                 return rc;
             // Gains and reduces the data
-            if((rc = receiveMap(master_map, counts[index], (index >= master) ? index + 1 : index, send_tag, recv_type, comm)) != MPI_SUCCESS)
+            if((rc = receiveMap(master_map, bufsizes[index], (index >= master) ? index + 1 : index, send_tag, comm)) != MPI_SUCCESS)
                 return rc;
 
             received += 1; // Updates counter
         }
         
         free(reqs);
-        free(counts);
+        free(bufsizes);
 
     } else {
-        int size = HASH_COUNT(*local_map), i = 0;
+        int size = HASH_COUNT(*local_map), pos = 0, buf_size = 0;
+        char *buf = malloc(sizeof(char));
 
-        // Flattening of own Hashmap
-        MapEntry *list_to_send = malloc(sizeof(MapEntry) * size);
-        for(MapEntry *e = *local_map; e != NULL; e = e->hh.next)
-            list_to_send[i++] = *e;
-        
-        // Sends the size of its map
-        if((rc = MPI_Send(&size, 1, MPI_INT, master, size_tag, comm)) != MPI_SUCCESS)
+        // Packing of own Hashmap
+        for(MapEntry *e = *local_map; e != NULL; e = e->hh.next) {
+            int str_size = strlen(e->word) + 1;
+            buf_size += str_size + sizeof(int);
+            buf = realloc(buf, buf_size * sizeof(char));    // Updates bufsize 
+
+            // Packs string and integer
+            if((rc = MPI_Pack(e->word, str_size, MPI_CHAR, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
+                return rc;
+            if((rc = MPI_Pack(&(e->counts), 1, MPI_INT, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
+                return rc;
+        }
+        // Sends the size of the packed map
+        if((rc = MPI_Send(&buf_size, 1, MPI_INT, master, size_tag, comm)) != MPI_SUCCESS)
             return rc;
-        // Sends the map using a resized datatype to skip one parameter of the struct
-        if((rc = MPI_Ssend(list_to_send, size, send_type, master, send_tag, comm)) != MPI_SUCCESS)
+        // Sends the map using MPI_PACKED datatype
+        if((rc = MPI_Ssend(buf, buf_size, MPI_PACKED, master, send_tag, comm)) != MPI_SUCCESS)
             return rc;
 
-        free(list_to_send);
+        free(buf);
     }
 
     return rc;
 }
 
-int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Datatype type, MPI_Comm comm) {
+int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Comm comm) {
     int rc = 0;
-    Couple *buf = malloc(sizeof(Couple) * size);
-            
-    if((rc = MPI_Recv(buf, size, type, source, tag, comm, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+    char *buf = malloc(size), *p;
+    int frequency, pos = 0;
+
+    // Receives packed buffer
+    if((rc = MPI_Recv(buf, size, MPI_PACKED, source, tag, comm, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
         return rc;
-    
-    for(int i = 0; i < size; i++)
-        increase_word_counter(map, buf[i].word, buf[i].counts);  
+
+    // Unpacks the buffer and reads all couples word-frequency
+    while(pos < size) {
+        int str_size = strlen(buf + pos) + 1;
+        p = malloc(sizeof(char) * str_size);
+
+        // Unpacks the word
+        if((rc = MPI_Unpack(buf, size, &pos, p, str_size, MPI_CHAR, comm)) != MPI_SUCCESS)
+            return rc;
+        // Unpacks the frequency
+        if((rc = MPI_Unpack(buf, size, &pos, &frequency, 1, MPI_INT, comm)) != MPI_SUCCESS)
+            return rc;
+        
+        increase_word_counter(map, p, frequency);  
+        free(p);     
+    }
+
     free(buf);
 
     return rc;
