@@ -41,6 +41,7 @@ TODO: Descrivere il problema
 # **Soluzione proposta**
 
 TODO: descrizione della soluzione proposta con spezzoni di codice
+TODO: nella descrizione della soluzione ricordarsi il problema tra PACK e MPI_struct_type
 
 <!-- UTILIZZO -->
 # **Utilizzo**

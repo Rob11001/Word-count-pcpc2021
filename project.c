@@ -17,7 +17,7 @@
 
 // Structures
 
-/* contains the required info for describing a file*/
+/* Contains the required info for describing a file*/
 typedef struct {
     char filename[FILENAME_SIZE];
     off_t size_in_bytes;
