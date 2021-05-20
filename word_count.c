@@ -14,6 +14,7 @@
 #define READ_BUF 1024
 #define WORD_SIZE 100
 #define MASTER 0
+#define DEBUG
 
 // Structures
 
@@ -30,7 +31,7 @@ typedef struct {
     int numfiles;
 } ProcessIndex;
 
-/* A entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
+/* An entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
 typedef struct {
     char* word;           /* key */
     int counts;
@@ -38,6 +39,16 @@ typedef struct {
 } MapEntry;
 
 // Utility functions
+
+/**
+ * @brief Reads all files in passed directory and creates a FileInfo foreach of them
+ * 
+ * @param dir_name Directory path (absolute path)
+ * @param total_size_in_bytes it'll contain the total size of the read files in bytes
+ * @param numfiles It'll contain the number of files read in the directory
+ * @return FileInfo* The array of FileInfo, or NULL if occurs an error
+ */
+FileInfo *dir_info_extraction(char *dir_name, off_t *total_size_in_bytes, int *numfiles);
 
 /**
  * @brief Splits up the files between the numtasks processors
@@ -171,9 +182,6 @@ int main(int argc, char **argv) {
     MPI_Comm graph_comm;
 
     // Master only
-    DIR* FD;
-    struct dirent* in_file;
-    struct stat buf;
     FileInfo *files;
     ProcessIndex *pindexes;
     int *send_counts, *displs;
@@ -248,59 +256,33 @@ int main(int argc, char **argv) {
 
     // Master reads input directory
     if(rank == master) {
-        if((FD = opendir(argv[1])) == NULL) {
-            fprintf(stderr, "Error : Failed to open input directory\n");
+        // Read files's info from directory
+        off_t total_size_in_bytes = 0;
+        int numfiles = 0;
+        
+        if((files = dir_info_extraction(argv[1], &total_size_in_bytes, &numfiles)) == NULL) {
+            fprintf(stderr, "Reading error on directory '%s'\n", argv[1]);
 
             return EXIT_FAILURE;
         }
-
-        files = malloc(sizeof(FileInfo));
-        int size = 0;
-        total_size = 0;
-
-        // FileInfo reading (directory reading)
-        while((in_file = readdir(FD))) {
-            char file[256] = {'\0'};
-
-            if(in_file->d_type != DT_REG)
-                continue;
-            if (!strcmp (in_file->d_name, "."))
-                continue;
-            if (!strcmp (in_file->d_name, ".."))    
-                continue;            
-
-            size += 1;
-            files = realloc(files, sizeof(FileInfo) * size);
         
-            strcat(file, argv[1]);
-            strcat(file, "/");
-
-            if(stat(strcat(file, in_file->d_name), &buf) != 0)
-                fprintf(stderr, "Error: Stat error on file %s\n", in_file->d_name);
-            
-            files[size - 1].filename[0] = '\0';
-            strcat(files[size - 1].filename, in_file->d_name);
-            files[size - 1].size_in_bytes = buf.st_size;
-            total_size += buf.st_size;
-            
-            // For debugging purpose
-            printf("%s - %ld\n", in_file->d_name, buf.st_size);
-        }
-
+        #ifdef DEBUG
         // For debugging purpose
-        batch_size = total_size / numtasks;
-        remainder = total_size % batch_size;
-        printf("File read: %d\n", size);
-        printf("Size in bytes: %ld\n", total_size);
+        batch_size = total_size_in_bytes / numtasks;
+        remainder = total_size_in_bytes % batch_size;
+        printf("File read: %d\n", numfiles);
+        printf("Size in bytes: %ld\n", total_size_in_bytes);
         printf("batch_size: %ld\n", batch_size);
+        #endif
 
         // Files schedulation
         send_counts = malloc(sizeof(int) * numtasks);
         displs = malloc(sizeof(int) * numtasks);
         pindexes = malloc(sizeof(ProcessIndex) * numtasks);
         
-        file_scheduling(numtasks, send_counts, displs, pindexes, total_size, size, files);
+        file_scheduling(numtasks, send_counts, displs, pindexes, total_size_in_bytes, numfiles, files);
 
+        #ifdef DEBUG
         // For debugging purpose
         printf("Displs: ");
         for(int i = 0; i < numtasks; i++) {
@@ -315,7 +297,7 @@ int main(int argc, char **argv) {
             printf("%ld-%ld-%d ", pindexes[i].start_offset, pindexes[i].end_offset, pindexes[i].numfiles);
         }
         printf("\n");
-        
+        #endif   
     }
 
     printf("Execution task %d ...\n", rank);
@@ -407,25 +389,79 @@ int main(int argc, char **argv) {
 
 // Functions
 
+FileInfo *dir_info_extraction(char *dir_name, off_t *total_size_in_bytes, int *numfiles) {
+    DIR* FD;
+    struct dirent* in_file;
+    struct stat buf;
+    FileInfo *files = NULL;
+
+    if((FD = opendir(dir_name)) == NULL) {
+            fprintf(stderr, "Error : Failed to open input directory\n");
+
+            return NULL;
+    }
+    
+    *total_size_in_bytes = 0;
+    files = malloc(sizeof(FileInfo));
+    *numfiles = 0;
+    int size = 0;
+    off_t total_size = 0;
+    // FileInfo reading (directory reading)
+    while((in_file = readdir(FD))) {
+        char file[FILENAME_SIZE] = {'\0'};
+        
+        if(in_file->d_type != DT_REG)
+            continue;
+        if (!strcmp (in_file->d_name, "."))
+            continue;
+        if (!strcmp (in_file->d_name, ".."))    
+            continue;            
+        size += 1;
+        files = realloc(files, sizeof(FileInfo) * size);
+    
+        strcat(file, dir_name);
+        strcat(file, "/");
+        if(stat(strcat(file, in_file->d_name), &buf) != 0)
+            fprintf(stderr, "Error: Stat error on file %s\n", in_file->d_name);
+        
+        files[size - 1].filename[0] = '\0';
+        strcat(files[size - 1].filename, in_file->d_name);
+        files[size - 1].size_in_bytes = buf.st_size;
+        total_size += buf.st_size;
+        
+        #ifdef DEBUG
+        // For debugging purpose
+        printf("%s - %ld\n", in_file->d_name, buf.st_size);
+        #endif
+    }
+
+    *numfiles = size;
+    *total_size_in_bytes = total_size;
+
+    return size > 0 ? files : NULL;
+}
+
+
+
 void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *pindexes, int total_size, int numfiles, FileInfo *files) {
     int batch_size = total_size / numtasks;
     int remainder = total_size % batch_size;
     off_t next = 0;
     off_t nextfile_size = files[0].size_in_bytes;
 
-    // Files schedulation
+    // Files'schedulation
     for(int i = 0, j = 0; i < numtasks; i++) { // i - processes index, j - files index
-        pindexes[i].start_offset = next;  // Process i begin offset
-        displs[i] = j;
+        pindexes[i].start_offset = next;  // Process i beginning offset
+        displs[i] = j;                    // Process i beginning file
         send_counts[i] = 0;
         int mybatch = batch_size + ((remainder > i));   // Bytes of process i
         
         while(j < numfiles && mybatch > 0) {
-            send_counts[i] += 1;                // Assegna il file j al processore i
+            send_counts[i] += 1;            // Assigns the file j to processor i
             
             if(mybatch <= nextfile_size) {       
-                pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // Calcolo la posizione in cui sono arrivato nell'ultimo file 
-                next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       // Offset di partenza del prossimo processo
+                pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // The position in which I've stopped in the last file 
+                next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       // Starting offset for the next processor
                 nextfile_size -= mybatch;
                 // We don't need to procede to next file
                 if(nextfile_size != 0) {
@@ -476,7 +512,6 @@ int num_of_bytes_UTF8(char first_char) {
     }
 }
 
-
 int issymbol(char ch) {
     return ch == '\'' || ch == '-';
 }
@@ -515,12 +550,12 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
         int current_word_size = 0, jump = 0, done = 0;
        
         // File reading
-        while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump boolean variable to skip the cycle
+        while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump is a boolean variable to skip the cycle
             char *p = readbuf;
             if(!done && i == 0 && offset > 0) {  // To handle word conflicts between processes
                 rd -= 1;
                 
-                while(isalpha(*p) || *p < 0 || issymbol(*p)) {// oppure è un carattere UTF-8 con più bytes oppure è un simbolo
+                while(isalpha(*p) || *p < 0 || issymbol(*p)) { // checks also if it's a character UTF-8 with more bytes or a symbol
                     p += 1;
                     rd += 1;
                 }
@@ -566,7 +601,7 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
                 } else if(current_word_size > 0 && issymbol(*p) && !issymbol(current_word[current_word_size - 1])) {
                     current_word[current_word_size++] = *p;
                 } else if(current_word_size > 0) { // Word ended
-                    // Ho una parola
+                    // I found a word
                     current_word[current_word_size] = '\0';
                     increase_word_counter(map, current_word, 1);
                     current_word[0] = '\0';
