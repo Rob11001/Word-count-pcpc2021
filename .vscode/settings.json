@@ -3,7 +3,17 @@
   "editor.formatOnSave": false,
   "files.associations": {
     "mpi.h": "c",
-    "mycollective.h": "c"
+    "mycollective.h": "c",
+    "cwchar": "cpp",
+    "cwctype": "cpp",
+    "locale.h": "c",
+    "wctype.h": "c",
+    "wchar.h": "c",
+    "type_traits": "c",
+    "array": "c",
+    "string_view": "c",
+    "initializer_list": "c",
+    "utility": "c"
   },
   "python.pythonPath": "/usr/bin/python3"
 }
