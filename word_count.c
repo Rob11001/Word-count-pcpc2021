@@ -117,7 +117,7 @@ int ismulticharsymbol(char *ch);
  * @param rank (Used for debugging)
  * @return int 0 if is all okay, non-zero number otherwise
  */
-int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank);
+int compute(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank);
 
 /**
  * @brief All processes send their data to the master, then the master collects them and reduces them in
@@ -318,31 +318,39 @@ int main(int argc, char **argv) {
         return rc;
 
     // Computation and word mapping
-    if((rc = computeAndMap(recvfiles, pindex.numfiles, pindex.start_offset, pindex.end_offset, &local_map, argv[1], rank)) != 0) {
+    if((rc = compute(recvfiles, pindex.numfiles, pindex.start_offset, pindex.end_offset, &local_map, argv[1], rank)) != 0) {
         fprintf(stderr, "Computation error, error code: %d\n", rc);
 
         return EXIT_FAILURE;
     }
     
+    #ifdef DEBUG
     printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
+    #endif
 
     // Gathering and Reduce
     if((rc = gatheringAndReduce(&master_map, master, &local_map, rank, numtasks, count_tag, send_tag, graph_comm)) != MPI_SUCCESS)
         return rc;
 
     if(rank == master) {
+        // Sorting
         HASH_SORT(master_map, map_cmp);
-        int tot = 0;
-        for(MapEntry *e = master_map; e != NULL; e = e->hh.next) {
-            tot += e->counts;
-        }
-        printf("Unique-words: %d, Total words: %d\n", HASH_COUNT(master_map), tot);
         
+        #ifdef DEBUG
+        int tot = 0;
+        for(MapEntry *e = master_map; e != NULL; e = e->hh.next) 
+            tot += e->counts;
+        printf("Unique-words: %d, Total words: %d\n", HASH_COUNT(master_map), tot);
+        #endif      
+        
+        // Csv creation
         if((rc = create_csv(argv[1], master_map)) != 0) {
             fprintf(stderr, "Error in csv file creation\n");
         
             return rc;
         }
+
+        printf("Completed '%s.csv' file creation...\n", argv[1]);
 
     }
 
@@ -520,12 +528,13 @@ int ismulticharsymbol(char *ch) {
     return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0;
 }
 
-int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
+int compute(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
     FILE *fp;
     char filename[FILENAME_SIZE];
     char readbuf[READ_BUF] = {'\0'};
     long offset = start_offset, rd = 0;
 
+    // Foreach file
     for(int i = 0; i < num_files; i++) {
         // Filename construction
         filename[0] = '\0';
@@ -547,27 +556,30 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
         }
 
         char current_word[WORD_SIZE] = {'\0'};
-        int current_word_size = 0, jump = 0, done = 0;
-       
-        // File reading
-        while(fgets(readbuf, READ_BUF, fp) && !jump) {  // jump is a boolean variable to skip the cycle
-            char *p = readbuf;
-            if(!done && i == 0 && offset > 0) {  // To handle word conflicts between processes
-                rd -= 1;
-                
-                while(isalpha(*p) || *p < 0 || issymbol(*p)) { // checks also if it's a character UTF-8 with more bytes or a symbol
-                    p += 1;
-                    rd += 1;
-                }
-                
-                if(rd < 0) {    // To set the correct rd and p value
-                    rd = 0;
-                    p += 1;
-                }
-
-                done = 1;
+        int current_word_size = 0, jump = 0;
+        
+        // First reading out of the loop 
+        char *p = fgets(readbuf, READ_BUF, fp);
+    
+        // To handle conflicts on word between processes
+        if(p != NULL && i == 0 && offset > 0) {  
+            rd -= 1;
+            
+            // Skips whitespaces and the word shared by the two processes, if exists
+            while((p - readbuf) < READ_BUF && (isalpha(*p) || *p < 0 || issymbol(*p))) { // checks also if it's a character UTF-8 with more bytes or a symbol
+                p += 1;
+                rd += 1;
             }
             
+            // To set the correct rd and p value
+            if(rd < 0) {    
+                rd = 0;
+                p += 1;
+            }
+        }
+
+        // File's reading
+        while(p != NULL && !jump) {  // jump is a boolean variable to skip the loop  
             // Reading from the buffer
             for(; *p && p < readbuf + READ_BUF; p++) {
                 rd += 1;
@@ -623,10 +635,14 @@ int computeAndMap(FileInfo *files, int num_files, long start_offset, long end_of
                 }
 
             }
-            readbuf[0] = '\0';  // Buffer reset
+
+            // Buffer reset
+            readbuf[0] = '\0';  
+            // New buffer's reading
+            p = fgets(readbuf, READ_BUF, fp);
         }
 
-        // If I end to read the file and there is still a word in currentWord buffer
+        // If I ended to read the file and there is still a word in currentWord buffer
         if(current_word_size > 0) {
             current_word[current_word_size] = '\0';
             increase_word_counter(map, current_word, 1);

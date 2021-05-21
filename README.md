@@ -158,6 +158,17 @@ Come visibile dallo snippet precedente, oltre alla creazione dei _MPI_Datatype_,
 Lo snippet seguente mostra, invece, la funzione utilizzata per effettuare il partitioning dei file. Per ognuno dei processi, MASTER incluso, viene calcolato il numero di file che dovrà processare, l'offset da cui dovrà partire nel primo file e l'offset dopo il quale dovrà fermarsi nell'ultimo file. In tal modo è visibile come ogni processo abbia la stessa quantità di dati da processare, realizzando una distribuzione abbastanza equa del lavoro.
 
 ```c
+/**
+ * @brief Splits up the files between the numtasks processors
+ * 
+ * @param numtasks the number of processors and size od the offsets, displs and pindexes arrays
+ * @param send_counts an array of size 'numtasks', which will contain the number of file assigned to processors
+ * @param displs an array of size 'numtasks', which will contain the displacements of processors respect to files
+ * @param pindexes an array of size 'numtasks', which will contain the required info for every process
+ * @param total_size the total size of files in bytes used to compute batch size. Every processor will be given at least total_size/numtasks bytes
+ * @param filenum the size of the files array 
+ * @param files an array of size 'filenum' 
+ */
 void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *pindexes, int total_size, int numfiles, FileInfo *files) {
     int batch_size = total_size / numtasks;
     int remainder = total_size % batch_size;
@@ -212,13 +223,248 @@ Tale comunicazione, come visibile nello snippet seguente, è stata realizzata at
     if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, master, graph_comm))!= MPI_SUCCESS)
         return rc;
 ```
-Come detto in precedenza, la scelta di effettuare due comunicazioni(operazioni "costose") è dovuta all'impossibilità da parte del nodo ricevente di poter conoscere a priori la dimensione della lista di nomi di file che gli sarà recapitata. Tale scelta, però, sarebbe facilmente evitabile supponendo che i file della directory siano posti nello stesso identico ordine per tutti i processi. In tal caso, infatti, sarebbe sufficiente una sola comunicazione. Nonostante ciò, è stata scelta la prima implementazione (più costosa) per avere una maggiore generalità a discapito ovviamente di una comunicazione in più.
+Come detto in precedenza, la scelta di effettuare due comunicazioni(operazioni "costose") è dovuta all'impossibilità da parte del nodo ricevente di poter conoscere a priori la dimensione della lista dei nomi di file che gli sarà recapitata. Tale scelta, però, sarebbe facilmente evitabile supponendo che i file della directory siano posti nello stesso identico ordine per tutti i processi. In tal caso, infatti, sarebbe sufficiente una sola comunicazione. Nonostante ciò, la scelta finale è ricaduta sulla prima implementazione (più costosa) per avere una maggiore generalità a discapito ovviamente di una comunicazione in più.
 
-TODO: descrivere il passo successivo per la computazione con codice\
+A questo punto ogni processo possiede tutti i dati necessari a portare avanti il suo task, ovvero effettuare il conteggio delle parole sulla porzione di dati assegnatagli.\
+Tale computazione è realizzata facendo sì che ogni processo legga ad uno ad uno i file assegnatigli, eseguendo se necessario una _seek_ per posizionarsi correttamente. L'identificazione delle parole durante la lettura del file è semplicemente implementata mediante lo scorrimmento carattere per carattere del buffer di appoggio usato per la lettura stessa. Di seguito uno snippet di codice contenente la funzione usata per la computazione.
+
+```c
+/**
+ * @brief Reads all words in the section of data passed and puts them in the hash
+ * 
+ * @param files list of file to read
+ * @param num_files the number of files
+ * @param start_offset the starting offset of the fist file
+ * @param end_offset the ending offset of the last file
+ * @param map the hash
+ * @param dir_path the dir path in which files are stored
+ * @param rank (Used for debugging)
+ * @return int 0 if is all okay, non-zero number otherwise
+ */
+int compute(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
+    FILE *fp;
+    char filename[FILENAME_SIZE];
+    char readbuf[READ_BUF] = {'\0'};
+    long offset = start_offset, rd = 0;
+
+    // Foreach file
+    for(int i = 0; i < num_files; i++) {
+        // Filename construction
+        filename[0] = '\0';
+        strcat(filename, dir_path);
+        strcat(filename,"/");
+        strcat(filename, files[i].filename);
+
+        // File open
+        if((fp = fopen(filename, "r")) == NULL) {
+            fprintf(stderr, "Error: fopen error on file %s\n", filename);
+            
+            return EXIT_FAILURE;
+        }
+
+        if(fseek(fp, offset > 0 ? offset - 1 : offset, SEEK_SET) != 0) {
+            fprintf(stderr, "Error: fseek error on file %s\n", filename);
+            
+            return EXIT_FAILURE;
+        }
+
+        char current_word[WORD_SIZE] = {'\0'};
+        int current_word_size = 0, jump = 0;
+        
+        // First reading out of the loop 
+        char *p = fgets(readbuf, READ_BUF, fp);
+    
+        // To handle conflicts on word between processes
+        if(p != NULL && i == 0 && offset > 0) {  
+            rd -= 1;
+            
+            // Skips whitespaces and the word shared by the two processes, if exists
+            while((p - readbuf) < READ_BUF && (isalpha(*p) || *p < 0 || issymbol(*p))) { // checks also if it's a character UTF-8 with more bytes or a symbol
+                p += 1;
+                rd += 1;
+            }
+            
+            // To set the correct rd and p value
+            if(rd < 0) {    
+                rd = 0;
+                p += 1;
+            }
+        }
+
+        // File's reading
+        while(p != NULL && !jump) {  // jump is a boolean variable to skip the loop  
+            // Reading from the buffer
+            for(; *p && p < readbuf + READ_BUF; p++) {
+                rd += 1;
+                
+                if(isalpha(*p)) {   // One byte char
+                    current_word[current_word_size++] = tolower(*p); // Legge carattere per carattere
+                } else if(*p < 0) { // Multi byte char
+                    int len = num_of_bytes_UTF8(*p);
+                    // checks current_word buffer overflow 
+                    if(current_word_size + len < WORD_SIZE - 1) {
+                        char ch[len + 1];
+                        for(int j = 0; j < len; j++) {
+                            ch[j] = *(p + j);
+                            current_word[current_word_size++] = tolower(*(p + j));
+                        }
+                        ch[len] = '\0';
+
+                        // If it's a symbol, it can be skipped
+                        if(ismulticharsymbol(ch)) {
+                            current_word_size -= len;
+                        }
+
+                        p += (len - 1);
+                        rd += (len - 1); // Remember to update rd variable
+                    } else {
+                        p -= 1;
+                        rd -= 1;
+                        current_word[current_word_size] = '\0';
+                        current_word_size = WORD_SIZE - 1;
+                    }
+                } else if(current_word_size > 0 && issymbol(*p) && !issymbol(current_word[current_word_size - 1])) {
+                    current_word[current_word_size++] = *p;
+                } else if(current_word_size > 0) { // Word ended
+                    // I found a word
+                    current_word[current_word_size] = '\0';
+                    increase_word_counter(map, current_word, 1);
+                    current_word[0] = '\0';
+                    current_word_size = 0;    
+                }
+
+                // checks current_word buffer overflow 
+                if(current_word_size == WORD_SIZE - 1) {
+                        current_word[current_word_size] = '\0';
+                        increase_word_counter(map, current_word, 1);
+                        current_word[0] = '\0';
+                        current_word_size = 0;
+                }
+
+                // If I don't have a word and I have gone beyond the end_offset I can stop
+                if(i == (num_files - 1) && current_word_size == 0 && (rd + offset > end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
+                    jump = 1;   // boolean flag to skip the outer cycle
+                    break;
+                }
+
+            }
+
+            // Buffer reset
+            readbuf[0] = '\0';  
+            // New buffer's reading
+            p = fgets(readbuf, READ_BUF, fp);
+        }
+
+        // If I ended to read the file and there is still a word in currentWord buffer
+        if(current_word_size > 0) {
+            current_word[current_word_size] = '\0';
+            increase_word_counter(map, current_word, 1);
+            current_word[0] = '\0';
+            current_word_size = 0;
+        }
+
+        fclose(fp);
+        rd = 0;
+        offset = 0;
+    }
+
+    return 0;
+}
+```
+Come visibile nella funzione, a causa della strategia di partitioning dei file scelta è stato necessario gestire il conflitto di parole "condivise" tra due processi successivi, ovvero parole poste esattamente a cavallo degli input di due processi successivi. Per gestire tale problemtica si è scelto, per evitare comunicazioni superflue, di far banalmente processare la parola al primo dei due processi, mentre il secondo si limita semplicemente a riconoscere ed ignorare tale parola "condivisa".\
+
+Per il mantenimento delle informazioni relative alla frequenza delle parole, invece, si è scelto di utilizzare una semplice Hash Table, usando come chiavi le parole stesse (in lower-case). La scelta di usare un Hash Table è stata guidata dalla necessità di poter usufruire di una struttura dati che permettesse in maniera efficiente e veloce l'aggiornamento delle frequenze.
+Nello snippet seguente la definizione della struct del singolo elemento della Hash Table e le funzioni di utilities usate per l'aggiornamento della frequenza (e la gestione della codifica UTF-8 dei file) durante la computazione (si è utilizzata l'Hash Table fornita dalla "libreria" **uthash.h**):
+
+```c
+/* An entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
+typedef struct {
+    char* word;           /* key */
+    int counts;
+    UT_hash_handle hh;  /* makes this structure hashable */ 
+} MapEntry;
+
+...
+/**
+ * @brief Adds the key to the hash with the passed value
+ * 
+ * @param map the hash
+ * @param word the key
+ * @param counts the value 
+ */
+void add_word(MapEntry **map, char* word_str, int counts) {
+    MapEntry *s = malloc(sizeof(MapEntry));
+    
+    s->word = strdup(word_str);
+    s->counts = counts;
+
+    HASH_ADD_STR(*map, word, s);
+}
+
+/**
+ * @brief Increases the value of the entry with the passed key, or creates it if necessary
+ * 
+ * @param map the hash
+ * @param word the key
+ * @param counts the value to add to old value
+ */
+void increase_word_counter(MapEntry **map, char *word, int counts) {
+    MapEntry *entry = NULL;
+    
+    HASH_FIND_STR(*map, word, entry);
+    if(entry != NULL) 
+        entry->counts += counts;
+     else 
+        add_word(map, word, counts);
+}
+
+/**
+ * @brief Calculates the number of bytes of the character using UTF-8
+ * 
+ * @param first_char char
+ * @return int value between 1 and 4
+ */
+int num_of_bytes_UTF8(char first_char) {
+    int byte = first_char & 0b11110000;
+    switch(byte) {
+        case 192: // Two bytes
+            return 2;
+        case 224: // Three bytes
+            return 3;
+        case 240: // Four bytes
+            return 4;
+        default:  // Not used
+            return 1;
+    }
+}
+
+/**
+ * @brief Checks if is a symbol
+ * 
+ * @param ch 
+ * @return [0-1]
+ */
+int issymbol(char ch) {
+    return ch == '\'' || ch == '-';
+}
+
+/**
+ * @brief Checks is is a symbol
+ * 
+ * @param ch 
+ * @return [0-1]
+ */
+int ismulticharsymbol(char *ch) {
+    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0;
+}
+```
+
 TODO: descrivere processo di raccolta dei dati\
+1. Descrivere hash table locali
+2. Descrivere comunicazione non-blocking
+3. Descrivere problematica e scelta di PACK and UNPACK invece di MPI_Datatype
+
 TODO: descrivere cvs\
-TODO: descrizione della soluzione proposta con spezzoni di codice\
-TODO: nella descrizione della soluzione ricordarsi il problema tra PACK e MPI_struct_type
 
 <!-- UTILIZZO -->
 # **Utilizzo**
