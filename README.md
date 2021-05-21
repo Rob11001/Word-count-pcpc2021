@@ -463,6 +463,7 @@ TODO: descrivere processo di raccolta dei dati\
 1. Descrivere hash table locali
 2. Descrivere comunicazione non-blocking
 3. Descrivere problematica e scelta di PACK and UNPACK invece di MPI_Datatype
+4. Vedere di aggiungere un header per discutere della correttezza della soluzione
 
 TODO: descrivere cvs\
 
