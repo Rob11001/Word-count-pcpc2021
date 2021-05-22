@@ -684,7 +684,7 @@ int create_csv(char *filename, MapEntry *map) {
 # **Correttezza della soluzione proposta**
 La correttezza della soluzione proposta non è stata dimostrata formalmente data la difficoltà di eseguire una dimostrazione simile, ma mediante l'esecuzione di una serie di test case molto semplici, che andassero a coprire i vari casi possibili.\
 Tali test case sono presenti nella directory *simple_test* e il file csv rappresentante il file di output dell'oracolo è presente nella directory *simple_test_oracle_result*.\
-L'esecuzione dei test ovviamente ha analizzato anche il comportamento della soluzione al variare del numero di processi, partendo dal semplice caso sequenziale con un solo processo.
+L'esecuzione dei test ovviamente è stata eseguita analizzando il comportamento della soluzione anche al variare del numero di processi, a partire dal semplice caso sequenziale con un solo processo, e l'output fornito risultava essere sempre il medesimo a dimostrazione della correttezza.
 
 
 <!-- UTILIZZO -->
@@ -717,9 +717,15 @@ specificando con `-np` il numero di processi, con `--hostfile` il file contenent
 
 # **Note sull'implementazione**
 
-TODO: UTF-8\
-TODO: uthash\
-TODO: tipi derivati e pack and unpack
+Nella gestione della codifica dei file è stata eseguita una semplificazione ragionevole supponendo che tutti i file siano in una unica codifica, **UTF-8**. Questo ha permesso una gestione più facile dei caratteri speciali composti da multipli byte.
+
+Per la memorizzazione delle coppie parola-frequenza è stata usata una semplice Hash Table realizzata mediante la "libreria" [`uthash.h`](http://troydhanson.github.io/uthash/userguide.html#_a_hash_in_c) ([link alla pagina github](https://github.com/troydhanson/uthash)).
+
+Per la comunicazione dei dati tra il MASTER e gli altri processi, come già detto nella sezione precedente, sono stati utilizzati sia i tipi MPI derivati attraverso `MPI_Type_create_struct` (permettendo l'invio e la ricevione di struct) che il packing e l'unpacking dei dati mediante `MPI_Pack` e `MPI_Unpack`. La scelta del secondo metod, in particoalre, è stata introdotta dalla necessità di ridurre la quantità di dati "inutili" da trasmettere nel processo di gathering finale, riuscendo così a compattare in un unico buffer contiguo solo i dati strettamente necessari, e di conseguenza inviarli tutti insieme.
+
+Rimanendo sempre nella tematica della comunicazione sono stati utilizzati sia meccanismi di comunicazione collettiva bloccanti per la distribuzione dei dati, come `MPI_Scatter` e `MPI_Scatterv`, e sia meccanismi di comunicazione non bloccanti, `MPI_IRecv`, per la raccolta dei dati, in modo da permettere alla fasi di computazione e comunicazione di interfogliarsi.
+
+TODO: topologia?
 
 <!-- BENCHMARK -->
 

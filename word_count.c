@@ -14,7 +14,6 @@
 #define READ_BUF 1024
 #define WORD_SIZE 100
 #define MASTER 0
-#define DEBUG
 
 // Structures
 
