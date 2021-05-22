@@ -51,8 +51,8 @@ Bisogna, dunque, tener conto del contenuto di ciascun file, e ci sono due possib
 - usare il numero di parole contenute nel file
 - usare la dimensione del file in bytes
 
-Tra i due si è scelto di optare per il secondo principalmente per evitare un conteggio preventivo delle parole da parte del nodo MASTER. Infatti, il MASTER nel secondo caso non ha bisogno di fare una lettura preventiva, ma può definire la partitioning usando semplicemente i metadati dei file presenti nella directory.\
-Per mantenere le informazioni relative ai file letti e alla "sezione" di input assegnata a ciascuno dei processi sono state utilizzate due struct con relativa creazione dei MPI Datatype per l'invio mediante Scatter.
+Tra i due si è scelto il secondo principalmente per evitare un conteggio preventivo delle parole da parte del nodo MASTER. Infatti, il MASTER nel secondo caso non ha bisogno di fare una lettura preventiva, ma può definire la partitioning usando semplicemente i metadati dei file presenti nella directory.\
+Per mantenere le informazioni relative ai file letti e alla "sezione" di input assegnata a ciascuno dei processi sono state utilizzate due struct con relativa creazione dei MPI Datatype associati per l'invio mediante Scatter.
 
 
 Di seguito è riportata la definizione delle struct usate e l'inizializzazione della comunicazione con la creazione dei tipi di dato derivato:
