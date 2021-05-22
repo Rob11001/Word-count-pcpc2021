@@ -82,7 +82,7 @@ void add_word(MapEntry **map, char* word, int counts);
 void increase_word_counter(MapEntry **map, char *word, int counts);
 
 /**
- * @brief Calculate the number of bytes of the character using UTF-8
+ * @brief Calculates the number of bytes of the character using UTF-8
  * 
  * @param first_char char
  * @return int value between 1 and 4
@@ -133,7 +133,7 @@ int compute(FileInfo *files, int num_files, long start_offset, long end_offset, 
  * @param comm the communicator used
  * @return int 0 if it's all okay, non-zero otherwise
  */
-int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm);
+int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm);
 
 /**
  * @brief Utility function which handles the receive of a list of couple from a process
@@ -157,10 +157,10 @@ int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Comm comm);
 int map_cmp(MapEntry *a, MapEntry *b);
 
 /**
- * @brief Create a csv file
+ * @brief Creates a csv file
  * 
  * @param filename name of the file
- * @param map the map will be written in the file
+ * @param map the map which will be written in the file
  * @return int 0 if it's all okay, non-zero otherwise
  */
 int create_csv(char *filename, MapEntry *map);
@@ -329,7 +329,7 @@ int main(int argc, char **argv) {
     #endif
 
     // Gathering and Reduce
-    if((rc = gatheringAndReduce(&master_map, master, &local_map, rank, numtasks, count_tag, send_tag, graph_comm)) != MPI_SUCCESS)
+    if((rc = gatherAndReduce(&master_map, master, &local_map, rank, numtasks, count_tag, send_tag, graph_comm)) != MPI_SUCCESS)
         return rc;
 
     if(rank == master) {
@@ -658,11 +658,11 @@ int compute(FileInfo *files, int num_files, long start_offset, long end_offset, 
     return 0;
 }
 
-int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
+int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
     int rc = 0;
     
     if(rank == master) {
-        // Request and counts
+        // Request and sizes
         MPI_Request *reqs = malloc(sizeof(MPI_Request) * (numtasks - 1));
         int *bufsizes = malloc(sizeof(int) * (numtasks - 1));
 
@@ -683,6 +683,7 @@ int gatheringAndReduce(MapEntry **master_map, int master, MapEntry **local_map, 
 
             increase_word_counter(master_map, e->word, e->counts);
 
+            // Checks if some process has sent its map
             if((rc = MPI_Testany(numtasks - 1, reqs, &index, &flag, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
                 return rc;
             

@@ -14,6 +14,9 @@
     <li>
       <a href="#soluzione-proposta">Soluzione proposta</a>
     </li>
+    <li>
+      <a href="#correttezza-della-soluzione-proposta">Correttezza della soluzione proposta</a>
+    </li>
     <li><a href="#utilizzo">Utilizzo</a></li>
     <li><a href="#note-sullimplementazione">Note sull'implementazione</a></li>
     <li><a href="#benchmark">Benchmark</a>
@@ -225,7 +228,7 @@ Tale comunicazione, come visibile nello snippet seguente, è stata realizzata at
 ```
 Come detto in precedenza, la scelta di effettuare due comunicazioni(operazioni "costose") è dovuta all'impossibilità da parte del nodo ricevente di poter conoscere a priori la dimensione della lista dei nomi di file che gli sarà recapitata. Tale scelta, però, sarebbe facilmente evitabile supponendo che i file della directory siano posti nello stesso identico ordine per tutti i processi. In tal caso, infatti, sarebbe sufficiente una sola comunicazione. Nonostante ciò, la scelta finale è ricaduta sulla prima implementazione (più costosa) per avere una maggiore generalità a discapito ovviamente di una comunicazione in più.
 
-A questo punto ogni processo possiede tutti i dati necessari a portare avanti il suo task, ovvero effettuare il conteggio delle parole sulla porzione di dati assegnatagli.\
+A questo punto ogni processo possiede tutti i dati necessari a portare avanti il suo task, ovvero effettuare il conteggio delle parole sulla porzione di dati assegnatagli, e può iniziare dunque la computazione parallela.\
 Tale computazione è realizzata facendo sì che ogni processo legga ad uno ad uno i file assegnatigli, eseguendo se necessario una _seek_ per posizionarsi correttamente. L'identificazione delle parole durante la lettura del file è semplicemente implementata mediante lo scorrimmento carattere per carattere del buffer di appoggio usato per la lettura stessa. Di seguito uno snippet di codice contenente la funzione usata per la computazione.
 
 ```c
@@ -459,21 +462,259 @@ int ismulticharsymbol(char *ch) {
 }
 ```
 
-TODO: descrivere processo di raccolta dei dati\
-1. Descrivere hash table locali
-2. Descrivere comunicazione non-blocking
-3. Descrivere problematica e scelta di PACK and UNPACK invece di MPI_Datatype
-4. Vedere di aggiungere un header per discutere della correttezza della soluzione
+Completata la computazione, ogni processo possiede una propria Hash Table locale che deve inoltrare al MASTER in maniera tale che sia eseguito il merge delle frequenze ottenendo l'istogramma globale della directory in input(corrisponde all'operazione di Reduce). L'operazione di gathering è stata eseguita attraverso una serie di comunicazioni non-bloccanti in maniera tale da permettere al nodo MASTER di effettuare il merge dei dati nella sua Hash Table "globale" man mano che i dati gli vengono inoltrati, senza dover aspettare tutti i processi come invece sarebbe stato necessario se si fosse scelto di utilizzare una comunicazione collettiva bloccante come MPI_Gather.
 
-TODO: descrivere cvs\
+Una problematica importante affrontata durante il processo di raccolta dati è stata relativa all'invio dei dati. In un primo momento si è pensato di procedere usando, come nei casi precedenti, un MPI_Datatype della struct contenente la coppia parola-frequenza, però ciò richiedeva che la dimensione del campo `word` non potesse essere allocata dinamicamente, ma dovesse essere definita a priori. Questo vincolo comportava di conseguenza uno spreco di dati non banale. Ad esempio, supponiamo che la dimensione di word fosse 100, per parole tipo "dog", "the", "cat", ovvero molto brevi (e anche molto comuni), sarebbe stato comunque necessario inviare tutto array (invio di quasi un centinaio di byte "inutili"). Dunque, per evitare tale spreco di banda, si è deciso di adottare una soluzione più a "basso livello" mediante MPI_Pack and MPI_Unpack. L'idea è stata quella di compattare in un unico array di byte le coppie parola-frequenza per scompattarle poi a destinazione, trasmettendo solo i byte strettanebte necessari.
+
+Inoltre in entrambi i casi non potendo conoscere a priori la dimensione delle Hash Table locali, è stato necessario eseguire una prima comunicazione preventiva.\
+Di seguito lo snippet di codice delle funzioni utilizzate per la raccolta e riduzione dei dati.
+
+```c
+/**
+ * @brief All processes send their data to the master, then the master collects them and reduces them in
+ * only one hash
+ * 
+ * @param master_map the hash used to collect all data (only used by the master)
+ * @param master the rank of the master
+ * @param local_map the map to send to the master
+ * @param rank the rank of the process
+ * @param numtasks the total number of processes in the comm
+ * @param size_tag tag used for the messages which processes use to specify the size of the data to send
+ * @param send_tag tag used to send the real data
+ * @param comm the communicator used
+ * @return int 0 if it's all okay, non-zero otherwise
+ */
+int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
+    int rc = 0;
+    
+    if(rank == master) {
+        // Request and sizes
+        MPI_Request *reqs = malloc(sizeof(MPI_Request) * (numtasks - 1));
+        int *bufsizes = malloc(sizeof(int) * (numtasks - 1));
+
+        // Post for size
+        for(int p = 0, i = 0; p < numtasks; p++) {
+            if(p == master)
+                continue;
+            
+            if((rc = MPI_Irecv(bufsizes + i, 1, MPI_INT, p, size_tag, comm, reqs + i)) != MPI_SUCCESS)
+                return rc;
+            i += 1;
+        }
+
+        int received = 0;
+        // Reduces the own local_map (Not really necessary, we could re-use local_map)
+        for(MapEntry *e = *local_map; e != NULL; e = e->hh.next) {
+            int index, flag;
+
+            increase_word_counter(master_map, e->word, e->counts);
+
+            // Checks if some process has sent its map
+            if((rc = MPI_Testany(numtasks - 1, reqs, &index, &flag, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+                return rc;
+            
+            if(index != MPI_UNDEFINED) {
+                if((rc = receiveMap(master_map, bufsizes[index], (index >= master) ? index + 1 : index, send_tag, comm)) != MPI_SUCCESS)
+                    return rc;
+
+                received += 1;
+            } 
+
+        }
+
+        // Receives and reduces all the remains data
+        while(received != numtasks - 1) {
+            int flag, index;
+            
+            // Waits until an receive has been completed
+            if((rc = MPI_Waitany(numtasks - 1, reqs, &index, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+                return rc;
+            // Gains and reduces the data
+            if((rc = receiveMap(master_map, bufsizes[index], (index >= master) ? index + 1 : index, send_tag, comm)) != MPI_SUCCESS)
+                return rc;
+
+            received += 1; // Updates counter
+        }
+        
+        free(reqs);
+        free(bufsizes);
+
+    } else {
+        int size = HASH_COUNT(*local_map), pos = 0, buf_size = 0;
+        char *buf = malloc(sizeof(char));
+
+        // Packing of own Hashmap
+        for(MapEntry *e = *local_map; e != NULL; e = e->hh.next) {
+            int str_size = strlen(e->word) + 1;
+            buf_size += str_size + sizeof(int);
+            buf = realloc(buf, buf_size * sizeof(char));    // Updates bufsize 
+
+            // Packs string and integer
+            if((rc = MPI_Pack(e->word, str_size, MPI_CHAR, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
+                return rc;
+            if((rc = MPI_Pack(&(e->counts), 1, MPI_INT, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
+                return rc;
+        }
+        // Sends the size of the packed map
+        if((rc = MPI_Send(&buf_size, 1, MPI_INT, master, size_tag, comm)) != MPI_SUCCESS)
+            return rc;
+        // Sends the map using MPI_PACKED datatype
+        if((rc = MPI_Ssend(buf, buf_size, MPI_PACKED, master, send_tag, comm)) != MPI_SUCCESS)
+            return rc;
+
+        free(buf);
+    }
+
+    return rc;
+}
+
+/**
+ * @brief Utility function which handles the receive of a list of couple from a process
+ * 
+ * @param map the hash in which the couples will be added
+ * @param size the size of the packed message
+ * @param source the process from which receives the data
+ * @param tag the tag used in the communication
+ * @param comm the communicator used
+ * @return int 0 if it's all okay, non-zero otherwise
+ */
+int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Comm comm) {
+    int rc = 0;
+    char *buf = malloc(size), *p;
+    int frequency, pos = 0;
+
+    // Receives packed buffer
+    if((rc = MPI_Recv(buf, size, MPI_PACKED, source, tag, comm, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
+        return rc;
+
+    // Unpacks the buffer and reads all couples word-frequency
+    while(pos < size) {
+        int str_size = strlen(buf + pos) + 1;
+        p = malloc(sizeof(char) * str_size);
+
+        // Unpacks the word
+        if((rc = MPI_Unpack(buf, size, &pos, p, str_size, MPI_CHAR, comm)) != MPI_SUCCESS)
+            return rc;
+        // Unpacks the frequency
+        if((rc = MPI_Unpack(buf, size, &pos, &frequency, 1, MPI_INT, comm)) != MPI_SUCCESS)
+            return rc;
+        
+        increase_word_counter(map, p, frequency);  
+        free(p);     
+    }
+
+    free(buf);
+
+    return rc;
+}
+```
+ Arrivati a questo punto ogni processo ha completato il suo lavoro e il MASTER possiede l'istogramma globale dell'input. Dunque, non gli rimane che effettuare l'ordinamento della struttura in base alla frequenza, ed infine scrivere l'output in un file csv.\
+Di seguito lo snippet che esegue tali operazioni conclusive.
+
+```c
+    if(rank == master) {
+        // Sorting
+        HASH_SORT(master_map, map_cmp);
+        
+        #ifdef DEBUG
+        int tot = 0;
+        for(MapEntry *e = master_map; e != NULL; e = e->hh.next) 
+            tot += e->counts;
+        printf("Unique-words: %d, Total words: %d\n", HASH_COUNT(master_map), tot);
+        #endif      
+        
+        // Csv creation
+        if((rc = create_csv(argv[1], master_map)) != 0) {
+            fprintf(stderr, "Error in csv file creation\n");
+        
+            return rc;
+        }
+
+        printf("Completed '%s.csv' file creation...\n", argv[1]);
+
+    }
+```
+
+```c
+/**
+ * @brief Compares two Map Entry using counts 
+ * 
+ * @param a Map entry
+ * @param b Map entry
+ * @return int 0 if are equals, > 0 if a is less frequent than b, < 0 otherwise
+ */
+int map_cmp(MapEntry *a, MapEntry *b) {
+    return (b->counts - a->counts);
+}
+
+/**
+ * @brief Creates a csv file
+ * 
+ * @param filename name of the file
+ * @param map the map which will be written in the file
+ * @return int 0 if it's all okay, non-zero otherwise
+ */
+int create_csv(char *filename, MapEntry *map) {
+    char file[FILENAME_SIZE] = {'\0'};
+    FILE *fp;
+
+    strcat(file, filename);
+    strcat(file, ".csv");
+
+    if((fp = fopen(file, "w")) == NULL) {
+        fprintf(stderr, "Error: fopen error on csv file\n");
+            
+        return EXIT_FAILURE;
+    }
+
+    fprintf(fp, "Word,Frequency\n");
+
+    for(MapEntry *e = map; e != NULL; e = e->hh.next) {
+        fprintf(fp, "%s,%d\n", e->word, e->counts);
+    } 
+
+    fclose(fp);
+
+    return 0;
+}
+```
+
+<!-- CORRETTEZZA -->
+
+# **Correttezza della soluzione proposta**
+La correttezza della soluzione proposta non è stata dimostrata formalmente data la difficoltà di eseguire una dimostrazione simile, ma mediante l'esecuzione di una serie di test case molto semplici, che andassero a coprire i vari casi possibili.\
+Tali test case sono presenti nella directory *simple_test* e il file csv rappresentante il file di output dell'oracolo è presente nella directory *simple_test_oracle_result*.\
+L'esecuzione dei test ovviamente ha analizzato anche il comportamento della soluzione al variare del numero di processi, partendo dal semplice caso sequenziale con un solo processo.
+
 
 <!-- UTILIZZO -->
-# **Utilizzo**
-## **Prerequisites**
 
-TODO: DESCRIVERE utilizzo
+# **Utilizzo**
+
+## **Prerequisites**
+- ambiente con OpenMPI
+
+Innanzitutto effettuare una copia locale del progetto, o almeno del file **"word_count.c"** e della directory **"libs"**.\
+Porre entrambi nella stessa directory o in caso contrario bisognerà cambiare manualmente 
+
+```c
+#include "./libs/uthash.h"
+```
+nel file C per rispettare il nuovo path.
+
+Fatto ciò, per compilare il codice basterà eseguire il comando standard di compilazione di ``mpicc``:
+```c
+mpicc word_count.c -o word_count
+```
+Per eseguire il programma su un cluster di macchine invece basterà utilizzare il seguente comando:
+```c
+mpirun -np x --hostfile hf word_count dir_path
+```
+specificando con `-np` il numero di processi, con `--hostfile` il file contenente le macchine del cluster con relativo numero di vCPU.\
+**Attenzione**: il parametro da linea di comando `dir_path` indica il path della directory in cui sono presenti i file su cui sarà eseguito il programma. Dunque, è estremamente importante che la directory e i file siano presenti nel medesimo path per tutti i nodi coinvolti nella computazione (semplificazione del problema).
 
 <!-- NOTE SULL'IMPLEMENTAZIONE -->
+
 # **Note sull'implementazione**
 
 TODO: UTF-8\
@@ -481,6 +722,7 @@ TODO: uthash\
 TODO: tipi derivati e pack and unpack
 
 <!-- BENCHMARK -->
+
 # **Benchmark**
 ## **Scalabilità forte**
 
@@ -489,9 +731,11 @@ TODO: tipi derivati e pack and unpack
 ## **Descrizione dei risultati**
 
 <!-- CONCLUSIONI -->
+
 # **Conclusioni**
 
 <!-- LICENSE -->
+
 # **License**
 
 Distributed under the MIT License. See `LICENSE` for more information.
