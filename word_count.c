@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
     MapEntry *master_map = NULL;
 
     if(argc != 2) {
-        fprintf(stderr, "Error : pass a directory path\n");
+        fprintf(stderr, "Error : you have to pass a directory path\n");
 
         return EXIT_FAILURE;
     }
@@ -524,7 +524,7 @@ int issymbol(char ch) {
 }
 
 int ismulticharsymbol(char *ch) {
-    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0;
+    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") || strcmp(ch, "»");
 }
 
 int compute(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
