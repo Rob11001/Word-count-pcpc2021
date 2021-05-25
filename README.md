@@ -1,10 +1,12 @@
 <!-- Title -->
+
 # WORD COUNT
 |**Word count**|**Bruno Roberto**| 
 |---|---|
 <br>
 
 <!-- TABLE OF CONTENTS -->
+
 <details open="open">
   <summary><h1 style="display: inline-block">Table of Contents</h1></summary>
   <ol>
@@ -28,19 +30,20 @@
     </li>
     <li><a href="#conclusioni">Conclusioni</a></li>
     <li><a href="#license">License</a></li>
-    <li><a href="#acknowledgements">Acknowledgements</a></li>
   </ol>
 </details>
 
 <br>
 
 <!-- DESCRIZIONE DEL PROBLEMA -->
+
 # **Descrizione del problema**
 Il **Word count** è un "semplice" problema che consiste nel conteggio del numero di parole presenti in un documento o una porzione di testo.\
 Il conteggio delle parole è richiesto in molte applicazioni pratiche che spaziano dal giornalismo, alle procedure legali, agli annunci pubblicitari e molto altro. Proprio per tale motivo la mole di dati da dover processare più facilmente e velocemente diventare "molto" grande e ciò ci conduce alla necessità di un approccio distribuito.\
 Il seguente progetto propone, dunque, una versione distribuita di Word count mediante l'uso di MPI.
 
 <!-- SOLUZIONE PROPOSTA -->
+
 # **Soluzione proposta**
 Andiamo a descrivere la soluzione proposta per la risoluzione di Word count evidenziando le problematiche riscontrate ed esponendo quali sono state le scelte implementative. 
 </br>
@@ -95,7 +98,7 @@ int main(int argc, char **argv) {
     MapEntry *master_map = NULL;
 
     if(argc != 2) {
-        fprintf(stderr, "Error : pass a directory path\n");
+        fprintf(stderr, "Error : you have to pass a directory path\n");
 
         return EXIT_FAILURE;
     }
@@ -458,7 +461,7 @@ int issymbol(char ch) {
  * @return [0-1]
  */
 int ismulticharsymbol(char *ch) {
-    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0;
+    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") || strcmp(ch, "»");
 }
 ```
 
