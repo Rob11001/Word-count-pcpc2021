@@ -14,6 +14,7 @@
 #define READ_BUF 1024
 #define WORD_SIZE 100
 #define MASTER 0
+#define DEBUG
 
 // Structures
 
@@ -33,7 +34,7 @@ typedef struct {
 /* An entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
 typedef struct {
     char* word;           /* key */
-    int counts;
+    int frequency;
     UT_hash_handle hh;  /* makes this structure hashable */ 
 } MapEntry;
 
@@ -67,18 +68,18 @@ void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *
  * 
  * @param map the hash
  * @param word the key
- * @param counts the value 
+ * @param count the value 
  */
-void add_word(MapEntry **map, char* word, int counts);
+void add_word(MapEntry **map, char* word, int count);
 
 /**
  * @brief Increases the value of the entry with the passed key, or creates it if necessary
  * 
  * @param map the hash
  * @param word the key
- * @param counts the value to add to old value
+ * @param count the value to add to old value
  */
-void increase_word_counter(MapEntry **map, char *word, int counts);
+void increase_word_counter(MapEntry **map, char *word, int count);
 
 /**
  * @brief Calculates the number of bytes of the character using UTF-8
@@ -338,7 +339,7 @@ int main(int argc, char **argv) {
         #ifdef DEBUG
         int tot = 0;
         for(MapEntry *e = master_map; e != NULL; e = e->hh.next) 
-            tot += e->counts;
+            tot += e->frequency;
         printf("Unique-words: %d, Total words: %d\n", HASH_COUNT(master_map), tot);
         #endif      
         
@@ -486,23 +487,23 @@ void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *
     }
 }
 
-void add_word(MapEntry **map, char* word_str, int counts) {
+void add_word(MapEntry **map, char* word_str, int count) {
     MapEntry *s = malloc(sizeof(MapEntry));
     
     s->word = strdup(word_str);
-    s->counts = counts;
+    s->frequency = count;
 
     HASH_ADD_STR(*map, word, s);
 }
 
-void increase_word_counter(MapEntry **map, char *word, int counts) {
+void increase_word_counter(MapEntry **map, char *word, int count) {
     MapEntry *entry = NULL;
     
     HASH_FIND_STR(*map, word, entry);
     if(entry != NULL) 
-        entry->counts += counts;
+        entry->frequency += count;
      else 
-        add_word(map, word, counts);
+        add_word(map, word, count);
 }
 
 int num_of_bytes_UTF8(char first_char) {
@@ -524,7 +525,7 @@ int issymbol(char ch) {
 }
 
 int ismulticharsymbol(char *ch) {
-    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") || strcmp(ch, "»");
+    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") == 0 || strcmp(ch, "»") == 0;
 }
 
 int compute(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
@@ -680,7 +681,7 @@ int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int
         for(MapEntry *e = *local_map; e != NULL; e = e->hh.next) {
             int index, flag;
 
-            increase_word_counter(master_map, e->word, e->counts);
+            increase_word_counter(master_map, e->word, e->frequency);
 
             // Checks if some process has sent its map
             if((rc = MPI_Testany(numtasks - 1, reqs, &index, &flag, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
@@ -725,7 +726,7 @@ int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int
             // Packs string and integer
             if((rc = MPI_Pack(e->word, str_size, MPI_CHAR, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
                 return rc;
-            if((rc = MPI_Pack(&(e->counts), 1, MPI_INT, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
+            if((rc = MPI_Pack(&(e->frequency), 1, MPI_INT, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
                 return rc;
         }
         // Sends the size of the packed map
@@ -772,7 +773,7 @@ int receiveMap(MapEntry **map, int size, int source, int tag, MPI_Comm comm) {
 }
 
 int map_cmp(MapEntry *a, MapEntry *b) {
-    return (b->counts - a->counts);
+    return (b->frequency - a->frequency);
 }
 
 int create_csv(char *filename, MapEntry *map) {
@@ -791,7 +792,7 @@ int create_csv(char *filename, MapEntry *map) {
     fprintf(fp, "Word,Frequency\n");
 
     for(MapEntry *e = map; e != NULL; e = e->hh.next) {
-        fprintf(fp, "%s,%d\n", e->word, e->counts);
+        fprintf(fp, "%s,%d\n", e->word, e->frequency);
     } 
 
     fclose(fp);

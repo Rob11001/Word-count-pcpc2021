@@ -386,7 +386,7 @@ Nello snippet seguente la definizione della struct del singolo elemento della Ha
 /* An entry of the Hash. It's a couple key-value. The key is a string, the value an integer */
 typedef struct {
     char* word;           /* key */
-    int counts;
+    int frequency;
     UT_hash_handle hh;  /* makes this structure hashable */ 
 } MapEntry;
 
@@ -402,7 +402,7 @@ void add_word(MapEntry **map, char* word_str, int counts) {
     MapEntry *s = malloc(sizeof(MapEntry));
     
     s->word = strdup(word_str);
-    s->counts = counts;
+    s->frequency = counts;
 
     HASH_ADD_STR(*map, word, s);
 }
@@ -419,7 +419,7 @@ void increase_word_counter(MapEntry **map, char *word, int counts) {
     
     HASH_FIND_STR(*map, word, entry);
     if(entry != NULL) 
-        entry->counts += counts;
+        entry->frequency += counts;
      else 
         add_word(map, word, counts);
 }
@@ -461,7 +461,7 @@ int issymbol(char ch) {
  * @return [0-1]
  */
 int ismulticharsymbol(char *ch) {
-    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") || strcmp(ch, "»");
+    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") == 0 || strcmp(ch, "»") == 0;
 }
 ```
 
@@ -510,7 +510,7 @@ int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int
         for(MapEntry *e = *local_map; e != NULL; e = e->hh.next) {
             int index, flag;
 
-            increase_word_counter(master_map, e->word, e->counts);
+            increase_word_counter(master_map, e->word, e->frequency);
 
             // Checks if some process has sent its map
             if((rc = MPI_Testany(numtasks - 1, reqs, &index, &flag, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
@@ -555,7 +555,7 @@ int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int
             // Packs string and integer
             if((rc = MPI_Pack(e->word, str_size, MPI_CHAR, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
                 return rc;
-            if((rc = MPI_Pack(&(e->counts), 1, MPI_INT, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
+            if((rc = MPI_Pack(&(e->frequency), 1, MPI_INT, buf, buf_size, &pos, comm)) != MPI_SUCCESS)
                 return rc;
         }
         // Sends the size of the packed map
@@ -622,7 +622,7 @@ Di seguito lo snippet che esegue tali operazioni conclusive.
         #ifdef DEBUG
         int tot = 0;
         for(MapEntry *e = master_map; e != NULL; e = e->hh.next) 
-            tot += e->counts;
+            tot += e->frequency;
         printf("Unique-words: %d, Total words: %d\n", HASH_COUNT(master_map), tot);
         #endif      
         
@@ -647,7 +647,7 @@ Di seguito lo snippet che esegue tali operazioni conclusive.
  * @return int 0 if are equals, > 0 if a is less frequent than b, < 0 otherwise
  */
 int map_cmp(MapEntry *a, MapEntry *b) {
-    return (b->counts - a->counts);
+    return (b->frequency - a->frequency);
 }
 
 /**
@@ -673,7 +673,7 @@ int create_csv(char *filename, MapEntry *map) {
     fprintf(fp, "Word,Frequency\n");
 
     for(MapEntry *e = map; e != NULL; e = e->hh.next) {
-        fprintf(fp, "%s,%d\n", e->word, e->counts);
+        fprintf(fp, "%s,%d\n", e->word, e->frequency);
     } 
 
     fclose(fp);
