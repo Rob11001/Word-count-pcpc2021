@@ -168,7 +168,7 @@ int create_csv(char *filename, MapEntry *map);
 int main(int argc, char **argv) {
     // All processes
     int rank, numtasks, send_tag = 1, count_tag = 2, rc;
-    int degree = 1, *dest, master = MASTER;
+    int indegree = 1, outdegree = 1, *dest, *src, oldmaster = MASTER, master;
     double start, end;
     off_t batch_size, total_size, remainder;
     MPI_Datatype process_data, file_info;
@@ -233,26 +233,40 @@ int main(int argc, char **argv) {
     
     // Graph topology construction
     if(rank == MASTER) {
-        degree = numtasks - 1;
-        dest = malloc(sizeof(int) *degree);
+        indegree = numtasks - 1;
+        src = malloc(sizeof(int) * indegree);
+        outdegree = numtasks - 1;
+        dest = malloc(sizeof(int) * outdegree);
         for(int i = 0, j = 0; i < numtasks; i++)
-            if(i != rank)
+            if(i != rank) {
+                src[j] = i;
                 dest[j++] = i;
+            }
     } else {
+        src = malloc(sizeof(int));
+        *src = MASTER;
         dest = malloc(sizeof(int));
         *dest = MASTER;
     }
-
-    if((rc = MPI_Dist_graph_create(MPI_COMM_WORLD, 1, &rank, &degree, dest, MPI_UNWEIGHTED, MPI_INFO_NULL, 1, &graph_comm)) != MPI_SUCCESS)
-        return rc;
     
+    if((rc = MPI_Dist_graph_create_adjacent(MPI_COMM_WORLD, indegree, src, MPI_UNWEIGHTED, outdegree, dest, MPI_UNWEIGHTED, MPI_INFO_NULL, 1, &graph_comm)) != MPI_SUCCESS)
+        return rc;
+        
+    free(src);
     free(dest);
 
     // Ranks' updating
     MPI_Comm_group(graph_comm, &graph_group);
     MPI_Comm_group(MPI_COMM_WORLD, &world_group);
-    MPI_Group_translate_ranks(world_group, 1, &master, graph_group, &master); 
+    MPI_Group_translate_ranks(world_group, 1, &oldmaster, graph_group, &master); 
     MPI_Comm_rank(graph_comm, &rank);  
+
+    #ifdef DEBUG
+    if(rank == master) {
+        printf("Graph topology created...\n");
+        fflush(stdout);
+    }
+    #endif
 
     // Master reads input directory
     if(rank == master) {

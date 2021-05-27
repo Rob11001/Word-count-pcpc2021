@@ -78,7 +78,7 @@ typedef struct {
 int main(int argc, char **argv) {
     // All processes
     int rank, numtasks, send_tag = 1, count_tag = 2, rc;
-    int degree = 1, *dest, master = MASTER;
+    int indegree = 1, outdegree = 1, *dest, *src, oldmaster = MASTER, master;
     double start, end;
     off_t batch_size, total_size, remainder;
     MPI_Datatype process_data, file_info;
@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
     MPI_Type_create_struct(3, blocklengths, displacements, types, &process_data);
     MPI_Type_commit(&process_data);
 
-    // FileInfo struct type
+    // FileInfo struct
     MPI_Type_get_extent(MPI_CHAR, &lb, &extent);
     blocklengths[0] = FILENAME_SIZE;
     types[0] = MPI_CHAR;
@@ -143,19 +143,26 @@ int main(int argc, char **argv) {
     
     // Graph topology construction
     if(rank == MASTER) {
-        degree = numtasks - 1;
-        dest = malloc(sizeof(int) *degree);
+        indegree = numtasks - 1;
+        src = malloc(sizeof(int) * indegree);
+        outdegree = numtasks - 1;
+        dest = malloc(sizeof(int) * outdegree);
         for(int i = 0, j = 0; i < numtasks; i++)
-            if(i != rank)
+            if(i != rank) {
+                src[j] = i;
                 dest[j++] = i;
+            }
     } else {
+        src = malloc(sizeof(int));
+        *src = MASTER;
         dest = malloc(sizeof(int));
         *dest = MASTER;
     }
-
-    if((rc = MPI_Dist_graph_create(MPI_COMM_WORLD, 1, &rank, &degree, dest, MPI_UNWEIGHTED, MPI_INFO_NULL, 1, &graph_comm)) != MPI_SUCCESS)
-        return rc;
     
+    if((rc = MPI_Dist_graph_create_adjacent(MPI_COMM_WORLD, indegree, src, MPI_UNWEIGHTED, outdegree, dest, MPI_UNWEIGHTED, MPI_INFO_NULL, 1, &graph_comm)) != MPI_SUCCESS)
+        return rc;
+        
+    free(src);
     free(dest);
 ```
 
@@ -688,13 +695,13 @@ int create_csv(char *filename, MapEntry *map) {
 # **Correttezza della soluzione proposta**
 La correttezza della soluzione proposta non è stata dimostrata formalmente data la difficoltà di eseguire una dimostrazione simile, ma mediante l'esecuzione di una serie di test case molto semplici, che andassero a coprire i vari casi possibili.\
 Tali test case sono presenti nella directory *simple_test* e il file csv rappresentante il file di output dell'oracolo è presente nella directory *simple_test_oracle_result*.\
-L'esecuzione dei test ovviamente è stata eseguita analizzando il comportamento della soluzione anche al variare del numero di processi, a partire dal semplice caso sequenziale con un solo processo, e l'output fornito risultava essere sempre il medesimo a dimostrazione della correttezza.\
-Di seguito, come esempio, due screen di output: il primo sequenziale e il secondo parallelo con 3 processi.
+L'esecuzione dei test ovviamente è stata eseguita analizzando il comportamento della soluzione anche al variare del numero di processi, a partire dal semplice caso sequenziale con un solo processo, e l'output fornito risultava essere sempre il medesimo a dimostrazione della correttezza.
 
-<p float="left">
+<figure float="left">
     <img src="images/sequential.png" alt="sequential" width="150" height="200">
     <img src="images/parallel.png" alt="parallel" width="150" height="200">
-</p>
+    <figcaption>Confronto output: sequenziale a sinistra, parallelo (3 processi) a destra</figcaption>
+</figure>
 
 <!-- UTILIZZO -->
 
