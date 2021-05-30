@@ -23,6 +23,9 @@ plt.xticks(proc)
 plt.yticks(np.arange(0, 21, 1.5))
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("strong_first_case_time.png", bbox_inches='tight', dpi=200)
+
 
 # Speedup
 plt.figure(2)
@@ -36,6 +39,8 @@ plt.yticks(np.arange(0, 7, 0.5))
 plt.xticks(proc)
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("strong_first_case_speedup.png", bbox_inches='tight', dpi=200)
 
 # Second case: N = 1.2 GB
 
@@ -58,6 +63,8 @@ plt.xticks(proc)
 plt.yticks(np.arange(0, 31, 1.5))
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("strong_second_case_time.png", bbox_inches='tight', dpi=200)
 
 # Speedup
 plt.figure(4)
@@ -71,6 +78,8 @@ plt.yticks(np.arange(0, 9, 0.5))
 plt.xticks(proc)
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("strong_second_case_speedup.png", bbox_inches='tight', dpi=200)
 
 # Weak
 # First case: N = 17.7 MB
@@ -93,6 +102,8 @@ plt.xticks(proc)
 plt.yticks(np.arange(0, 7, 0.5))
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("weak_first_case_time.png", bbox_inches='tight', dpi=200)
 
 # Efficiency
 plt.figure(6)
@@ -106,6 +117,8 @@ plt.xticks(proc)
 plt.yticks(np.arange(0, 1, 0.15))
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("weak_first_case_efficiency.png", bbox_inches='tight', dpi=200)
 
 # Second case: N = 54 MB
 data = pd.read_csv("./data/weak_second_case.csv", sep=";")
@@ -127,6 +140,8 @@ plt.xticks(proc)
 plt.yticks(np.arange(0, 7, 0.5))
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("weak_second_case_time.png", bbox_inches='tight', dpi=200)
 
 # Efficiency
 plt.figure(8)
@@ -140,6 +155,8 @@ plt.xticks(proc)
 plt.yticks(np.arange(0, 1, 0.10))
 plt.grid()
 plt.legend()
+plt.tight_layout()
+plt.savefig("weak_second_case_efficiency.png", bbox_inches='tight', dpi=200)
 
 
 plt.show()
