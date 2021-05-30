@@ -170,7 +170,18 @@ int main(int argc, char **argv) {
         *dest = MASTER;
     }
     
-    if((rc = MPI_Dist_graph_create_adjacent(MPI_COMM_WORLD, indegree, src, MPI_UNWEIGHTED, outdegree, dest, MPI_UNWEIGHTED, MPI_INFO_NULL, 1, &graph_comm)) != MPI_SUCCESS)
+    if((rc = MPI_Dist_graph_create_adjacent(
+        MPI_COMM_WORLD, 
+        indegree, 
+        src, 
+        MPI_UNWEIGHTED, outdegree, 
+        dest, 
+        MPI_UNWEIGHTED, 
+        MPI_INFO_NULL, 
+        1, 
+        &graph_comm
+        )) != MPI_SUCCESS
+    )
         return rc;
         
     free(src);
@@ -193,7 +204,15 @@ Lo snippet seguente mostra, invece, la funzione utilizzata per effettuare il par
  * @param filenum the size of the files array 
  * @param files an array of size 'filenum' 
  */
-void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *pindexes, int total_size, int numfiles, FileInfo *files) {
+void file_scheduling(
+    int numtasks, 
+    int *send_counts, 
+    int *displs, 
+    ProcessIndex *pindexes,
+    int total_size, 
+    int numfiles, 
+    FileInfo *files
+) {
     int batch_size = total_size / numtasks;
     int remainder = total_size % batch_size;
     off_t next = 0;
@@ -209,9 +228,11 @@ void file_scheduling(int numtasks, int *send_counts, int *displs, ProcessIndex *
         while(j < numfiles && mybatch > 0) {
             send_counts[i] += 1;            // Assigns the file j to processor i
             
-            if(mybatch <= nextfile_size) {       
-                pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch; // The position in which I've stopped in the last file 
-                next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       // Starting offset for the next processor
+            if(mybatch <= nextfile_size) {
+                // The position in which I've stopped in the last file       
+                pindexes[i].end_offset = files[j].size_in_bytes - nextfile_size + mybatch;
+                // Starting offset for the next processor  
+                next = (mybatch == nextfile_size) ? 0 : pindexes[i].end_offset + 1;       
                 nextfile_size -= mybatch;
                 // We don't need to procede to next file
                 if(nextfile_size != 0) {
@@ -244,7 +265,18 @@ Tale comunicazione, come visibile nello snippet seguente, è stata realizzata at
     FileInfo *recvfiles = malloc(sizeof(FileInfo) * pindex.numfiles);
     
     // Files info
-    if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, master, graph_comm))!= MPI_SUCCESS)
+    if((rc = MPI_Scatterv(
+        files, 
+        send_counts, 
+        displs, 
+        file_info, 
+        recvfiles, 
+        pindex.numfiles, 
+        file_info, 
+        master, 
+        graph_comm
+        )) != MPI_SUCCESS
+    )
         return rc;
     
     // Deallocation
@@ -273,7 +305,15 @@ Tale computazione è realizzata facendo sì che ogni processo legga ad uno ad un
  * @param rank (Used for debugging)
  * @return int 0 if is all okay, non-zero number otherwise
  */
-int compute(FileInfo *files, int num_files, long start_offset, long end_offset, MapEntry **map, char *dir_path, int rank) {
+int compute(
+    FileInfo *files, 
+    int num_files, 
+    long start_offset, 
+    long end_offset, 
+    MapEntry **map, 
+    char *dir_path, 
+    int rank
+) {
     FILE *fp;
     char filename[FILENAME_SIZE];
     char readbuf[READ_BUF] = {'\0'};
@@ -311,7 +351,8 @@ int compute(FileInfo *files, int num_files, long start_offset, long end_offset, 
             rd -= 1;
             
             // Skips whitespaces and the word shared by the two processes, if exists
-            while((p - readbuf) < READ_BUF && (isalpha(*p) || *p < 0 || issymbol(*p))) { // checks also if it's a character UTF-8 with more bytes or a symbol
+            // checks also if it's a character UTF-8 with more bytes or a symbol
+            while((p - readbuf) < READ_BUF && (isalpha(*p) || *p < 0 || issymbol(*p))) { 
                 p += 1;
                 rd += 1;
             }
@@ -330,7 +371,7 @@ int compute(FileInfo *files, int num_files, long start_offset, long end_offset, 
                 rd += 1;
                 
                 if(isalpha(*p)) {   // One byte char
-                    current_word[current_word_size++] = tolower(*p); // Legge carattere per carattere
+                    current_word[current_word_size++] = tolower(*p); 
                 } else if(*p < 0) { // Multi byte char
                     int len = num_of_bytes_UTF8(*p);
                     // checks current_word buffer overflow 
@@ -374,7 +415,8 @@ int compute(FileInfo *files, int num_files, long start_offset, long end_offset, 
                 }
 
                 // If I don't have a word and I have gone beyond the end_offset I can stop
-                if(i == (num_files - 1) && current_word_size == 0 && (rd + offset > end_offset)) {   // To handle last file end_offset(also to handle processes conflicts)
+                // To handle last file end_offset(also to handle processes conflicts)
+                if(i == (num_files - 1) && current_word_size == 0 && (rd + offset > end_offset)) {   
                     jump = 1;   // boolean flag to skip the outer cycle
                     break;
                 }
@@ -487,7 +529,11 @@ int issymbol(char ch) {
  * @return [0-1]
  */
 int ismulticharsymbol(char *ch) {
-    return strcmp(ch, "”") == 0 || strcmp(ch, "—") == 0 || strcmp(ch, "“") == 0 || strcmp(ch, "«") == 0 || strcmp(ch, "»") == 0;
+    return strcmp(ch, "”") == 0 || 
+           strcmp(ch, "—") == 0 || 
+           strcmp(ch, "“") == 0 || 
+           strcmp(ch, "«") == 0 || 
+           strcmp(ch, "»") == 0;
 }
 ```
 
@@ -514,7 +560,16 @@ Di seguito lo snippet di codice delle funzioni utilizzate per la raccolta e ridu
  * @param comm the communicator used
  * @return int 0 if it's all okay, non-zero otherwise
  */
-int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int rank, int numtasks, int size_tag, int send_tag, MPI_Comm comm) {
+int gatherAndReduce(
+    MapEntry **master_map, 
+    int master, 
+    MapEntry **local_map, 
+    int rank, 
+    int numtasks, 
+    int size_tag, 
+    int send_tag, 
+    MPI_Comm comm
+) {
     int rc = 0;
     
     if(rank == master) {
@@ -544,7 +599,14 @@ int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int
                 return rc;
             
             if(index != MPI_UNDEFINED) {
-                if((rc = receiveMap(master_map, bufsizes[index], (index >= master) ? index + 1 : index, send_tag, comm)) != MPI_SUCCESS)
+                if((rc = receiveMap(
+                    master_map, 
+                    bufsizes[index], 
+                    (index >= master) ? index + 1 : index, 
+                    send_tag, 
+                    comm
+                    )) != MPI_SUCCESS
+                )
                     return rc;
 
                 received += 1;
@@ -560,7 +622,12 @@ int gatherAndReduce(MapEntry **master_map, int master, MapEntry **local_map, int
             if((rc = MPI_Waitany(numtasks - 1, reqs, &index, MPI_STATUS_IGNORE)) != MPI_SUCCESS)
                 return rc;
             // Gains and reduces the data
-            if((rc = receiveMap(master_map, bufsizes[index], (index >= master) ? index + 1 : index, send_tag, comm)) != MPI_SUCCESS)
+            if((rc = receiveMap(master_map, 
+                bufsizes[index], 
+                (index >= master) ? index + 1 : index, 
+                send_tag, 
+                comm)) != MPI_SUCCESS
+            )
                 return rc;
 
             received += 1; // Updates counter
