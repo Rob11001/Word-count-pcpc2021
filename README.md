@@ -767,7 +767,7 @@ TODO: topologia?
 
 # **Benchmark**
 Nella fase di benchmark è stato testato il comportamento della soluzione proposta sia in termini di *scalabilità forte*, dimensione dell'input costante e numero di processori variabile, che *scalabilità debole*, workload costante per ogni processore.\
-La dimensione **N** nel nostro caso indica la dimensione in byte dell'input, essendo appunto il parametro usato nel processo di partioning del carico. Il workload utilizzato per i test è stato costruito dai file di testo contenuti nella directory [` files `](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/files)), ripetuti più volte se necessario. I file usati sono, dunque, i seguenti:
+La dimensione **N** nel nostro caso indica la dimensione in byte dell'input, essendo appunto il parametro usato nel processo di partioning del carico. Il workload utilizzato per i test è stato costruito dai file di testo contenuti nella directory [` files `](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/files), ripetuti più volte se necessario. I file usati sono, dunque, i seguenti:
 - 01-The_Fellowship_Of_The_Ring.txt: 1025382 bytes
 - 02-The_Two_Towers.txt: 838056 bytes 
 - 03-The_Return_Of_The_King.txt: 726684 bytes
@@ -943,9 +943,25 @@ Hello World I am rank 7 of 8 running on node1
 
 ## **Descrizione dei risultati**
 
+Dai risultati ottenuti dalla *scalabilità forte* notiamo, come ci si aspettava, che all'aumentare del numero di processori usati il tempo di esecuzione
+decresce. Tale decremento, però, man mano va ad appiattirsi sempre di più fino a un certo punto in cui l'overhead di comunicazione ottenuto dall'aggiunta di nuovi
+processori non è tale da rallentare l'esecuzione. Osserviamo anche, dai due test eseguiti, come all'aumentare della dimensione dell'input lo speedup ottenuto risulta a sua volta aumentare e questo perché ovviamente l'overhead di comunicazione ha un impatto decisamente maggiore su input non molto grandi. Infatti, con input di dimensione N = 566 MB le performance massime e di conseguenza anche lo speedup massimo sono raggiunti intorno all'uso di 9 processori, al contrario raddoppiando l'input vengono raggiunti intorno ai 11-12 processori.\
+Dunque lo speedup tende a crescere man mano che la dimensione dell'input lo fa.\
+Dal punto di vista dello scheduling il tempo impiegato è abbastanza simile, l'unica cosa che possiamo notare è il comportamento relativo alla crescita dello speedup. Infatti, lo scheduling *By node* ha una crescita "più costante", mentre lo scheduling *By slot* in alcuni punti ha dei cali di prestazioni dovuti probabilmente alla saturazione delle macchine fisiche. Ad esempio ciò è visibile nel grafico di N con dimensione 1.2G quando si vanno a saturare le 8 vCPU della prima macchina.
+
+Passando ai risultati della *scalabilità debole* notiamo che la crescità dell'overhead è tanto più veloce quanto più piccolo è il workload assegnato ai singoli processori. Infatti, aumentando la dimensione del workload assegnato ad ogni processo è visibile come la velocità di crescita del tempo rallenti. Dunque all'aumentare dell'input tende ad aumentare anche l'efficienza.\
+Dal punto di vista dello scheduling, invece, lo scheduling *By slot* tende ad avere un comportamento generale migliore. Probabilmente perché
+il costo dell'overhead della comunicazione, a causa della workload non troppo elevato, è tale da rendere trascurabile la saturazione delle macchine fisiche e quindi l'"adiacenza" dei processi fornita dallo scheduling *By slot* permette di ottenere tempi di esecuzioni migliori.
+
+
 <!-- CONCLUSIONI -->
 
 # **Conclusioni**
+L'algoritmo giova senza dubbio della parallelizzazione, mostrando un aumento delle prestazioni all'aumentare della dimensione dell'input e del numero
+di processori. Possiamo però senza alcun dubbio notare delle criticità. La più significativa è sicuramente l'overhead relativo alla comunicazione che tende a crescere abbastanza velocemente. Ciò è dovuto principalmente al processo di gathering dei dati da parte del MASTER che è senza alcun dubbio il bottle-neck dell'implementazione. Infatti, nonostante il tentativo di miglioramento mediante una comunicazione non bloccante non è stato sufficiente a ridurre l'overhead. Quindi, bisognerebbe adottare soluzioni e strategie più intelligenti e sofisticate come evitare che i dati siano inviati tutti al MASTER, inserendo ad esempio degli step intermedi che prevedano il raccoglimento dei dati da altri processi in modo da ridurre le comunicazioni e i dati inoltrati al MASTER.\
+Un ulteriore miglioramento potrebbe essere fatto nel processo di scattering iniziale. Qui, infatti, si potrebbe adottare una soluzione più a basso livello 
+mediante Pack and UnPack evitando, come fatto nel processo di raccolta, la trasmissione di dati "superflui".\
+Infine, un'ultima leggera critica potrebbe essere fatta sul processo di ordinamento. Questo, infatti, potrebbe essere eseguito completamente o in parte durante il processo di raccolta in modo da evitare un ordinamento a posteriori. 
 
 <!-- LICENSE -->
 
