@@ -330,6 +330,13 @@ int main(int argc, char **argv) {
     // Files info
     if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, master, graph_comm))!= MPI_SUCCESS)
         return rc;
+    // Deallocation
+    if(rank == master) {
+        free(files);
+        free(send_counts);
+        free(displs);
+        free(pindexes);
+    }
 
     // Computation and word mapping
     if((rc = compute(recvfiles, pindex.numfiles, pindex.start_offset, pindex.end_offset, &local_map, argv[1], rank)) != 0) {
@@ -337,6 +344,8 @@ int main(int argc, char **argv) {
 
         return EXIT_FAILURE;
     }
+    // Deallocation
+    free(recvfiles);
     
     #ifdef DEBUG
     printf("Task %d -> total_word: %d\n", rank, HASH_COUNT(local_map));
@@ -383,12 +392,6 @@ int main(int argc, char **argv) {
     if(rank == master) {
         // Time
         printf("Task %d -- Time in ms = %f\n", rank, end - start);
-        
-        // Deallocation
-        free(files);
-        free(displs);
-        free(send_counts);
-        free(pindexes);
 
         // Free hash
         for(MapEntry *e = master_map, *next; e != NULL; e = next) {
@@ -399,6 +402,7 @@ int main(int argc, char **argv) {
 
     }
 
+    // Free local hash
     for(MapEntry *e = local_map, *next; e != NULL; e = next) {
         free(e->word);
         next = e->hh.next;
@@ -428,6 +432,7 @@ FileInfo *dir_info_extraction(char *dir_name, off_t *total_size_in_bytes, int *n
     *numfiles = 0;
     int size = 0;
     off_t total_size = 0;
+
     // FileInfo reading (directory reading)
     while((in_file = readdir(FD))) {
         char file[FILENAME_SIZE] = {'\0'};

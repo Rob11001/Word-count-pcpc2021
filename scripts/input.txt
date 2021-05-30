@@ -1,0 +1,4 @@
+0.0.0.0 slots=1 max-slots=1
+ip2 slots=1 max-slots=1
+ip3 slots=1 max-slots=1
+ip4 slots=1 max-slots=1

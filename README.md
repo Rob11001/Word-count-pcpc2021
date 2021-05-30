@@ -15,6 +15,10 @@
     </li>
     <li>
       <a href="#soluzione-proposta">Soluzione proposta</a>
+      <ul>
+         <li><a href="#breve-descrizione">Breve descrizione</a></li>
+         <li><a href="#descrizione-della-soluzione-proposta">Descrizione della soluzione proposta</a></li>
+      </ul>
     </li>
     <li>
       <a href="#correttezza-della-soluzione-proposta">Correttezza della soluzione proposta</a>
@@ -39,13 +43,20 @@
 
 # **Descrizione del problema**
 Il **Word count** è un "semplice" problema che consiste nel conteggio del numero di parole presenti in un documento o una porzione di testo.\
-Il conteggio delle parole è richiesto in molte applicazioni pratiche che spaziano dal giornalismo, alle procedure legali, agli annunci pubblicitari e molto altro. Proprio per tale motivo la mole di dati da dover processare più facilmente e velocemente diventare "molto" grande e ciò ci conduce alla necessità di un approccio distribuito.\
-Il seguente progetto propone, dunque, una versione distribuita di Word count mediante l'uso di MPI.
+Il conteggio delle parole è richiesto in molte applicazioni pratiche che spaziano dal giornalismo, alle procedure legali, agli annunci pubblicitari e molto altro. Proprio per tale motivo la mole di dati da dover processare può facilmente e velocemente diventare "molto" grande e ciò ci conduce alla necessità di un approccio distribuito.\
+Il seguente progetto propone, dunque, una semplice versione distribuita di Word count mediante l'uso di MPI.
 
 <!-- SOLUZIONE PROPOSTA -->
 
 # **Soluzione proposta**
-Andiamo a descrivere la soluzione proposta per la risoluzione di Word count evidenziando le problematiche riscontrate ed esponendo quali sono state le scelte implementative. 
+
+## **Breve descrizione**
+Brevemente la risoluzione del problema, seguendo il modello MASTER-SLAVE, avviene mediante tre step principali: divisione del carico, parsing parallelo dell'input e raccolta finale dei risultati.\
+Il primo step, la divisione del carico ad opera del MASTER, consiste nella semplice distribuzione dei file ai vari processi SLAVE in base al contenuto dei file (ovvero alla loro dimensione, tale aspetto è approfondito successivamente). In seguito, una volta che ogni processo ha a disposizione la propria sezione di input, inizia il secondo step relativo alla computazione parallela. Ogni nodo, dunque, effettua il conteggio delle parole mediante l'uso di una propria Hash Table locale. Infine, completata la computazione arriva il terzo e ultimo step, la raccolta dei risultati, nel quale ogni nodo invia il contenuto della propria table al MASTER che ne esegue il merge e si occupa di produrre il file csv finale contenente la lista delle parole con relativa frequenza.
+</br>
+</br>
+## **Descrizione della soluzione proposta**
+Andiamo a descrivere più in dettaglio la soluzione proposta per la risoluzione di Word count evidenziando le problematiche riscontrate ed esponendo quali sono state le scelte implementative. 
 </br>
 </br>
 Innanzitutto la prima problematica affrontata è stata quella della distribuzione del carico di lavoro tra i processi coinvolti nella computazione.\
@@ -54,7 +65,7 @@ Bisogna, dunque, tener conto del contenuto di ciascun file, e ci sono due possib
 - usare il numero di parole contenute nel file
 - usare la dimensione del file in bytes
 
-Tra i due si è scelto il secondo principalmente per evitare un conteggio preventivo delle parole da parte del nodo MASTER. Infatti, il MASTER nel secondo caso non ha bisogno di fare una lettura preventiva, ma può definire la partitioning usando semplicemente i metadati dei file presenti nella directory.\
+Tra i due si è scelto il secondo, principalmente per evitare un conteggio preventivo delle parole da parte del nodo MASTER. Infatti, il MASTER nel secondo caso non ha bisogno di fare una lettura preventiva, ma può definire la partitioning usando semplicemente i metadati dei file presenti nella directory.\
 Per mantenere le informazioni relative ai file letti e alla "sezione" di input assegnata a ciascuno dei processi sono state utilizzate due struct con relativa creazione dei MPI Datatype associati per l'invio mediante Scatter.
 
 
@@ -235,6 +246,14 @@ Tale comunicazione, come visibile nello snippet seguente, è stata realizzata at
     // Files info
     if((rc = MPI_Scatterv(files, send_counts, displs, file_info, recvfiles, pindex.numfiles, file_info, master, graph_comm))!= MPI_SUCCESS)
         return rc;
+    
+    // Deallocation
+    if(rank == master) {
+        free(files);
+        free(send_counts);
+        free(displs);
+        free(pindexes);
+    }
 ```
 Come detto in precedenza, la scelta di effettuare due comunicazioni(operazioni "costose") è dovuta all'impossibilità da parte del nodo ricevente di poter conoscere a priori la dimensione della lista dei nomi di file che gli sarà recapitata. Tale scelta, però, sarebbe facilmente evitabile supponendo che i file della directory siano posti nello stesso identico ordine per tutti i processi. In tal caso, infatti, sarebbe sufficiente una sola comunicazione. Nonostante ciò, la scelta finale è ricaduta sulla prima implementazione (più costosa) per avere una maggiore generalità a discapito ovviamente di una comunicazione in più.
 
@@ -747,7 +766,87 @@ TODO: topologia?
 <!-- BENCHMARK -->
 
 # **Benchmark**
+Nella fase di benchmark è stato testato il comportamento della soluzione proposta sia in termini di *scalabilità forte*, dimensione dell'input costante e numero di processori variabile, che *scalabilità debole*, workload costante per ogni processore.\
+La dimensione **N** nel nostro caso indica la dimensione in byte dell'input, essendo appunto il parametro usato nel processo di partioning del carico. Il workload utilizzato per i test è stato costruito dai file di testo contenuti nella directory [` files `](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/files)), ripetuti più volte se necessario. I file usati sono, dunque, i seguenti:
+- 01-The_Fellowship_Of_The_Ring.txt: 1025382 bytes
+- 02-The_Two_Towers.txt: 838056 bytes 
+- 03-The_Return_Of_The_King.txt: 726684 bytes
+- bible.txt: 4433689 bytes
+- Book 1 - The Philosopher's Stone.txt: 474353 bytes
+- Book 2 - The Chamber of Secrets.txt: 531212 bytes 
+- Book 3 - The Prisoner of Azkaban.txt: 676412 bytes
+- Book 4 - The Goblet of Fire.txt: 1187504 bytes
+- Book 5 - The Order of the Phoenix.txt: 1607344 bytes
+- Book 6 - The Half Blood Prince.txt: 1058928 bytes 
+- Book 7 - The Deathly Hallows.txt: 1224900 bytes
+- commedia.txt: 557042 bytes
+- words.txt: 4234901 bytes
+
+Per un totale di 2.827.694 parole e una dimensione complessiva di 17,7 MB.
+
+Le istanze di macchine virtuali utilizzate, invece, sono: 
+- `AWS EC2 t2.2xlarge`, ognuna con un numero di vCPU pari a 8.
+
+In particolare per la creazione del cluster ne sono state usate 4 istanze, mentre le misurazioni temporali sono state ottenute facendo una media dei tempi su un numero di esecuzioni da 3 a 6.
+
+Inoltre è stato analizzato il comportamento della soluzione anche in base allo scheduling dei processi sui nodi. Infatti, MPI permette di specificare la policy di scheduling da seguire nell'assegnamento dei processi sui vari nodi del cluster (specificati nel `hostfile`). In particolar modo due sono le policy che possono essere specificate all'esecuzione:
+- **By slot**: questa è la policy di default che può essere richiesta esplicitamente mediante l'opzione `--map-by slot` del comando `mpirun`. In questa modalità, Open MPI schedula i processi su un nodo finché tutti i suoi slots specificati nel hostflie non sono esauriti, prima di passare al successivo. L'idea è di massimizzare il numero di processi "adiacienti".\
+Esempio: 
+```console
+ shell$ cat my-hosts
+ node0 slots=2 max_slots=20
+ node1 slots=2 max_slots=20
+ shell$ mpirun --hostfile my-hosts -np 8 --map-by slot | sort
+ Hello World I am rank 0 of 8 running on node0
+ Hello World I am rank 1 of 8 running on node0
+ Hello World I am rank 2 of 8 running on node1
+ Hello World I am rank 3 of 8 running on node1
+ Hello World I am rank 4 of 8 running on node0
+ Hello World I am rank 5 of 8 running on node0
+ Hello World I am rank 6 of 8 running on node1
+ Hello World I am rank 7 of 8 running on node1
+```
+- **By node**: questa policy puà essere richiesta mediante l'opzione `--map-by node` del comando `mpirun`. In questa modalità, Open MPI schedula un processo su ogni nodo secondo una policy round-robin finché tutti i processi non sono stati schedulati.\
+Esempio:
+```console
+shell$ cat my-hosts
+node0 slots=2 max_slots=20
+node1 slots=2 max_slots=20
+shell$ mpirun --hostfile my-hosts -np 8 --map-by node hello | sort
+Hello World I am rank 0 of 8 running on node0
+Hello World I am rank 1 of 8 running on node1
+Hello World I am rank 2 of 8 running on node0
+Hello World I am rank 3 of 8 running on node1
+Hello World I am rank 4 of 8 running on node0
+Hello World I am rank 5 of 8 running on node1
+Hello World I am rank 6 of 8 running on node0
+Hello World I am rank 7 of 8 running on node1
+```
+
 ## **Scalabilità forte**
+### **N = 566 MB**
+| \# P | Time (s) By slot | Time (s) By node | Speedup By slot | Speedup By node |
+| ---- | ------------ | ------------ | --------------- | --------------- |
+| 1    | 13.92        | 13.98        | 1.00            | 1.00            |
+| 2    | 8.93         | 8.78         | 1.56            | 1.59            |
+| 3    | 6.41         | 6.38         | 2.17            | 2.19            |
+| 4    | 5.54         | 5.38         | 2.51            | 2.60            |
+| 5    | 5.09         | 4.69         | 2.73            | 2.98            |
+| 6    | 4.64         | 4.54         | 3.00            | 3.08            |
+| 7    | 4.60         | 4.00         | 3.03            | 3.50            |
+| 8    | 3.59         | 3.61         | 3.88            | 3.87            |
+| 9    | 3.44         | 3.53         | 4.05            | 3.96            |
+| 10   | 3.51         | 3.63         | 3.96            | 3.85            |
+| 11   | 3.64         | 3.72         | 3.82            | 3.76            |
+| 12   | 3.62         | 3.77         | 3.84            | 3.71            |
+| 13   | 3.88         | 3.90         | 3.59            | 3.58            |
+| 14   | 4.52         | 4.26         | 3.08            | 3.28            |
+| 15   | 4.59         | 4.27         | 3.03            | 3.28            |
+| 16   | 4.51         | 4.75         | 3.09            | 2.94            |
+
+</br>
+
+<img src="images/benchmark/strong_first_case_time.png">
 
 ## **Scalabilità debole**
 
