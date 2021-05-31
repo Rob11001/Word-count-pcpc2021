@@ -15,7 +15,6 @@
 #define WORD_SIZE 100
 #define MASTER 0
 #define DEBUG
-
 // Structures
 
 /* Contains the required info for describing a file*/

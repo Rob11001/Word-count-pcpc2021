@@ -42,7 +42,7 @@
 <!-- DESCRIZIONE DEL PROBLEMA -->
 
 # **Descrizione del problema**
-Il **Word count** è un "semplice" problema che consiste nel conteggio del numero di parole presenti in un documento o una porzione di testo.\
+**Word count** è un "semplice" problema che consiste nel conteggio del numero di parole presenti in un documento o una porzione di testo.\
 Il conteggio delle parole è richiesto in molte applicazioni pratiche che spaziano dal giornalismo, alle procedure legali, agli annunci pubblicitari e molto altro. Proprio per tale motivo la mole di dati da dover processare può facilmente e velocemente diventare "molto" grande e ciò ci conduce alla necessità di un approccio distribuito.\
 Il seguente progetto propone, dunque, una semplice versione distribuita di Word count mediante l'uso di MPI.
 
@@ -52,24 +52,26 @@ Il seguente progetto propone, dunque, una semplice versione distribuita di Word 
 
 ## **Breve descrizione**
 Brevemente la risoluzione del problema, seguendo il modello MASTER-SLAVE, avviene mediante tre step principali: divisione del carico, parsing parallelo dell'input e raccolta finale dei risultati.\
-Il primo step, la divisione del carico ad opera del MASTER, consiste nella semplice distribuzione dei file ai vari processi SLAVE in base al contenuto dei file (ovvero alla loro dimensione, tale aspetto è approfondito successivamente). In seguito, una volta che ogni processo ha a disposizione la propria sezione di input, inizia il secondo step relativo alla computazione parallela. Ogni nodo, dunque, effettua il conteggio delle parole mediante l'uso di una propria Hash Table locale. Infine, completata la computazione arriva il terzo e ultimo step, la raccolta dei risultati, nel quale ogni nodo invia il contenuto della propria table al MASTER che ne esegue il merge e si occupa di produrre il file csv finale contenente la lista delle parole con relativa frequenza.
-</br>
-</br>
+Il primo step, la divisione del carico ad opera del MASTER, consiste nella semplice distribuzione dei file ai vari processi SLAVE in base al loro "contenuto" (ovvero alla loro dimensione, tale aspetto è approfondito successivamente). In seguito, una volta che ogni processo ha a disposizione la propria sezione di input, inizia il secondo step relativo alla computazione parallela. Ogni nodo, dunque, effettua il conteggio delle parole mediante l'uso di una propria Hash Table locale. Infine, completata la computazione arriva il terzo e ultimo step, la raccolta dei risultati, nel quale ogni nodo invia il contenuto della propria table al MASTER che ne esegue il merge e si occupa di produrre il file csv finale contenente la lista delle parole con relativa frequenza.
+
+
+
 ## **Descrizione della soluzione proposta**
 Andiamo a descrivere più in dettaglio la soluzione proposta per la risoluzione di Word count evidenziando le problematiche riscontrate ed esponendo quali sono state le scelte implementative. 
 </br>
 </br>
 Innanzitutto la prima problematica affrontata è stata quella della distribuzione del carico di lavoro tra i processi coinvolti nella computazione.\
-Seguendo la traccia del problema il nodo MASTER deve suddividere i file da processare tra i vari nodi. Tale suddivisione non può essere condotta basandosi solo sul numero dei file altrimenti risulterebbe non omogenea.\
+Seguendo la traccia del problema il nodo MASTER deve suddividere i file da processare tra i vari nodi. Tale suddivisione non può essere condotta basandosi solo sul numero dei file, altrimenti risulterebbe non omogenea.\
 Bisogna, dunque, tener conto del contenuto di ciascun file, e ci sono due possibili approcci per dare un peso ai file:
 - usare il numero di parole contenute nel file
 - usare la dimensione del file in bytes
 
 Tra i due si è scelto il secondo, principalmente per evitare un conteggio preventivo delle parole da parte del nodo MASTER. Infatti, il MASTER nel secondo caso non ha bisogno di fare una lettura preventiva, ma può definire la partitioning usando semplicemente i metadati dei file presenti nella directory.\
-Per mantenere le informazioni relative ai file letti e alla "sezione" di input assegnata a ciascuno dei processi sono state utilizzate due struct con relativa creazione dei MPI Datatype associati per l'invio mediante Scatter.
+Per mantenere le informazioni relative ai file letti e alla "sezione" di input assegnata a ciascuno dei processi sono state utilizzate due struct con relativa creazione dei `MPI_Datatype` associati per l'invio mediante Scatter.
 
 
 Di seguito è riportata la definizione delle struct usate e l'inizializzazione della comunicazione con la creazione dei tipi di dato derivato:
+
 ```c
 /* Contains the required info for describing a file*/
 typedef struct {
@@ -190,7 +192,7 @@ int main(int argc, char **argv) {
 
 Come visibile dallo snippet precedente, oltre alla creazione dei _MPI_Datatype_, si è scelto di creare anche un nuovo _Communicator_ con una topologia a grafo per riordinare i nodi in maniera da ottimizzare la comunicazione. La topologia scelta rispecchia banalmente la comunicazione MASTER-SLAVE tra i nodi ponendo al centro del grafo il MASTER.
 
-Lo snippet seguente mostra, invece, la funzione utilizzata per effettuare il partitioning dei file. Per ognuno dei processi, MASTER incluso, viene calcolato il numero di file che dovrà processare, l'offset da cui dovrà partire nel primo file e l'offset dopo il quale dovrà fermarsi nell'ultimo file. In tal modo è visibile come ogni processo abbia la stessa quantità di dati da processare, realizzando una distribuzione abbastanza equa del lavoro.
+Lo snippet seguente mostra, invece, la funzione utilizzata per effettuare il partitioning dei file. Come è visibile, per ognuno dei processi, MASTER incluso, viene calcolato il numero di file che dovrà processare, l'offset da cui dovrà partire nel primo file e l'offset dopo il quale dovrà fermarsi nell'ultimo file. In tal modo è chiaro come ad ogni processo venga assicurata la stessa quantità di dati da processare, realizzando una distribuzione equa del lavoro.
 
 ```c
 /**
@@ -287,7 +289,7 @@ Tale comunicazione, come visibile nello snippet seguente, è stata realizzata at
         free(pindexes);
     }
 ```
-Come detto in precedenza, la scelta di effettuare due comunicazioni(operazioni "costose") è dovuta all'impossibilità da parte del nodo ricevente di poter conoscere a priori la dimensione della lista dei nomi di file che gli sarà recapitata. Tale scelta, però, sarebbe facilmente evitabile supponendo che i file della directory siano posti nello stesso identico ordine per tutti i processi. In tal caso, infatti, sarebbe sufficiente una sola comunicazione. Nonostante ciò, la scelta finale è ricaduta sulla prima implementazione (più costosa) per avere una maggiore generalità a discapito ovviamente di una comunicazione in più.
+Come detto in precedenza, l'obbligo di effettuare due comunicazioni (operazioni "costose") è dovuto all'impossibilità da parte del nodo ricevente di poter conoscere a priori la dimensione della lista dei nomi di file che gli sarà recapitata. Tale scelta, però, sarebbe facilmente evitabile supponendo che i file della directory siano posti nello stesso identico ordine per tutti i processi. In tal caso, infatti, sarebbe sufficiente una sola comunicazione. Nonostante ciò, la scelta finale è ricaduta sulla prima implementazione (più costosa) per avere una maggiore generalità a discapito ovviamente di una comunicazione in più.
 
 A questo punto ogni processo possiede tutti i dati necessari a portare avanti il suo task, ovvero effettuare il conteggio delle parole sulla porzione di dati assegnatagli, e può iniziare dunque la computazione parallela.\
 Tale computazione è realizzata facendo sì che ogni processo legga ad uno ad uno i file assegnatigli, eseguendo se necessario una _seek_ per posizionarsi correttamente. L'identificazione delle parole durante la lettura del file è semplicemente implementata mediante lo scorrimmento carattere per carattere del buffer di appoggio usato per la lettura stessa. Di seguito uno snippet di codice contenente la funzione usata per la computazione.
@@ -537,9 +539,9 @@ int ismulticharsymbol(char *ch) {
 }
 ```
 
-Completata la computazione, ogni processo possiede una propria Hash Table locale che deve inoltrare al MASTER in maniera tale che sia eseguito il merge delle frequenze ottenendo l'istogramma globale della directory in input(corrisponde all'operazione di Reduce). L'operazione di gathering è stata eseguita attraverso una serie di comunicazioni non-bloccanti in maniera tale da permettere al nodo MASTER di effettuare il merge dei dati nella sua Hash Table "globale" man mano che i dati gli vengono inoltrati, senza dover aspettare tutti i processi come invece sarebbe stato necessario se si fosse scelto di utilizzare una comunicazione collettiva bloccante come MPI_Gather.
+Completata la computazione, ogni processo possiede una propria Hash Table locale che deve inoltrare al MASTER in maniera tale che sia eseguito il merge delle frequenze ottenendo l'istogramma globale della directory in input (corrisponde all'operazione di Reduce). L'operazione di gathering è stata eseguita attraverso una serie di comunicazioni non-bloccanti in maniera tale da permettere al nodo MASTER di effettuare il merge dei dati nella sua Hash Table "globale" man mano che i dati gli vengono inoltrati, senza dover aspettare tutti i processi come invece sarebbe stato necessario se si fosse scelto di utilizzare una comunicazione collettiva bloccante come `MPI_Gather`.
 
-Una problematica importante affrontata durante il processo di raccolta dati è stata relativa all'invio dei dati. In un primo momento si è pensato di procedere usando, come nei casi precedenti, un MPI_Datatype della struct contenente la coppia parola-frequenza, però ciò richiedeva che la dimensione del campo `word` non potesse essere allocata dinamicamente, ma dovesse essere definita a priori. Questo vincolo comportava di conseguenza uno spreco di dati non banale. Ad esempio, supponiamo che la dimensione di word fosse 100, per parole tipo "dog", "the", "cat", ovvero molto brevi (e anche molto comuni), sarebbe stato comunque necessario inviare tutto array (invio di quasi un centinaio di byte "inutili"). Dunque, per evitare tale spreco di banda, si è deciso di adottare una soluzione più a "basso livello" mediante `MPI_Pack` and `MPI_Unpack`. L'idea è stata quella di compattare in un unico array di byte le coppie parola-frequenza per scompattarle poi a destinazione, trasmettendo solo i byte strettamente necessari. L'oggetto `MPI_Packed` da inviare è stato realizzato compattando le word nel seguente modo: "parola_1-frequenza_1-parola_2-frequenza_2-...".\
+Una problematica importante affrontata durante il processo di raccolta dati è stata relativa all'invio dei dati. In un primo momento si è pensato di procedere usando, come nei casi precedenti, un MPI_Datatype della struct contenente la coppia parola-frequenza, però ciò richiedeva che la dimensione del campo `word` non potesse essere allocata dinamicamente, ma dovesse essere definita a priori. Questo vincolo comportava di conseguenza uno spreco di dati non banale. Ad esempio, supponiamo che la dimensione di word fosse 100, per parole tipo "dog", "the", "cat", ovvero molto brevi (e anche molto comuni), sarebbe stato comunque necessario inviare tutto l'array (invio di quasi un centinaio di byte "inutili"). Dunque, per evitare tale spreco di banda, si è deciso di adottare una soluzione più a "basso livello" mediante `MPI_Pack` and `MPI_Unpack`. L'idea è stata quella di compattare in un unico array di byte le coppie parola-frequenza per scompattarle poi a destinazione, trasmettendo solo i byte strettamente necessari. L'oggetto `MPI_Packed` da inviare è stato realizzato compattando le word nel seguente modo: "parola_1-frequenza_1-parola_2-frequenza_2-...".\
 L'operazione duale di scompattamento, invece, sfrutta il fatto che ogni parola termina con il carattere '`\0`' per ricreare nuovamente le coppie parola-frequenza. 
 
 In entrambi i casi non potendo conoscere a priori la dimensione delle Hash Table locali, è stato necessario eseguire una prima comunicazione preventiva.\
@@ -780,7 +782,7 @@ int create_csv(char *filename, MapEntry *map) {
 
 # **Correttezza della soluzione proposta**
 La correttezza della soluzione proposta non è stata dimostrata formalmente data la difficoltà di eseguire una dimostrazione simile, ma mediante l'esecuzione di una serie di test case molto semplici, che andassero a coprire i vari casi possibili.\
-Tali test case sono presenti nella directory *simple_test* e il file csv rappresentante il file di output dell'oracolo è presente nella directory *simple_test_oracle_result*.\
+Tali test case sono presenti nella directory [*simple_test*](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/simple_test) e il file csv rappresentante il file di output dell'oracolo è presente nella directory [*simple_test_oracle_result*](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/simple_test_oracle_result).\
 L'esecuzione dei test ovviamente è stata eseguita analizzando il comportamento della soluzione anche al variare del numero di processi, a partire dal semplice caso sequenziale con un solo processo, e l'output fornito risultava essere sempre il medesimo a dimostrazione della correttezza.
 
 <figure float="left">
@@ -804,7 +806,7 @@ Porre entrambi nella stessa directory o in caso contrario bisognerà cambiare ma
 ```
 nel file C per rispettare il nuovo path.
 
-Fatto ciò, per compilare il codice basterà eseguire il comando standard di compilazione di ``mpicc``:
+Fatto ciò, per compilare il codice basterà eseguire il comando standard di compilazione ``mpicc``:
 ```c
 mpicc word_count.c -o word_count
 ```
@@ -824,17 +826,15 @@ Inoltre, le parole sono state individuate usando come caratteri di terminazione 
 
 Per la memorizzazione delle coppie parola-frequenza è stata usata una semplice Hash Table realizzata mediante la "libreria" [`uthash.h`](http://troydhanson.github.io/uthash/userguide.html#_a_hash_in_c) ([link alla pagina github](https://github.com/troydhanson/uthash)).
 
-Per la comunicazione dei dati tra il MASTER e gli altri processi, come già detto nella sezione precedente, sono stati utilizzati sia i tipi MPI derivati attraverso `MPI_Type_create_struct` (permettendo l'invio e la ricevione di struct) che il packing e l'unpacking dei dati mediante `MPI_Pack` e `MPI_Unpack`. La scelta del secondo metod, in particoalre, è stata introdotta dalla necessità di ridurre la quantità di dati "inutili" da trasmettere nel processo di gathering finale, riuscendo così a compattare in un unico buffer contiguo solo i dati strettamente necessari, e di conseguenza inviarli tutti insieme.
+Per la comunicazione dei dati tra il MASTER e gli altri processi, come già detto nella sezione precedente, sono stati utilizzati sia i tipi MPI derivati attraverso `MPI_Type_create_struct` (permettendo l'invio e la ricezione di struct) che il packing e l'unpacking dei dati mediante `MPI_Pack` e `MPI_Unpack`. La scelta del secondo metodo, in particolare, è stata introdotta dalla necessità di ridurre la quantità di dati "inutili" trasmessi nel processo di gathering finale, riuscendo così a compattare in un unico buffer contiguo solo i dati strettamente necessari, e di conseguenza inviarli tutti insieme.
 
-Rimanendo sempre nella tematica della comunicazione sono stati utilizzati sia meccanismi di comunicazione collettiva bloccanti per la distribuzione dei dati, come `MPI_Scatter` e `MPI_Scatterv`, e sia meccanismi di comunicazione non bloccanti, `MPI_IRecv`, per la raccolta dei dati, in modo da permettere alla fasi di computazione e comunicazione di interfogliarsi.
-
-TODO: topologia?
+Rimanendo sempre nella tematica della comunicazione sono stati utilizzati sia meccanismi di comunicazione collettiva bloccanti per la distribuzione dei dati, come `MPI_Scatter` e `MPI_Scatterv`, e sia meccanismi di comunicazione non bloccanti, `MPI_IRecv`, per la raccolta dei dati, in modo da permettere l'overlap tra le fasi di computazione e comunicazione.
 
 <!-- BENCHMARK -->
 
 # **Benchmark**
 Nella fase di benchmark è stato testato il comportamento della soluzione proposta sia in termini di *scalabilità forte*, dimensione dell'input costante e numero di processori variabile, che *scalabilità debole*, workload costante per ogni processore.\
-La dimensione **N** nel nostro caso indica la dimensione in byte dell'input, essendo appunto il parametro usato nel processo di partioning del carico. Il workload utilizzato per i test è stato costruito dai file di testo contenuti nella directory [` files `](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/files), ripetuti più volte se necessario. I file usati sono, dunque, i seguenti:
+La dimensione **N** nel nostro caso indica la dimensione in byte dell'input, essendo appunto il parametro usato nel processo di partioning del carico. Il workload utilizzato per i test è stato costruito dai file di testo contenuti nella directory [` files `](https://github.com/Rob11001/Word-count-pcpc2021/tree/main/files), ripetuti più volte se necessario. I file che sono stati utilizzati sono, dunque, i seguenti:
 - 01-The_Fellowship_Of_The_Ring.txt: 1025382 bytes
 - 02-The_Two_Towers.txt: 838056 bytes 
 - 03-The_Return_Of_The_King.txt: 726684 bytes
@@ -852,11 +852,14 @@ La dimensione **N** nel nostro caso indica la dimensione in byte dell'input, ess
 Per un totale di 2.827.694 parole e una dimensione complessiva di 17,7 MB.
 
 Le istanze di macchine virtuali utilizzate, invece, sono: 
-- `AWS EC2 t2.2xlarge`, ognuna con un numero di vCPU pari a 8.
+- `AWS EC2 t2.2xlarge`, ognuna con un numero di vCPU, e anche CPU fisiche, pari a 8.
 
-In particolare per la creazione del cluster ne sono state usate 4 istanze, mentre le misurazioni temporali sono state ottenute facendo una media dei tempi su un numero di esecuzioni da 3 a 6.
+In particolare per la creazione del cluster ne sono state usate 4 istanze, mentre le misurazioni temporali sono state ottenute facendo una media dei tempi su un numero di esecuzioni da 3 a 6. Dal punto di vista delle ottimizzazioni a livello di compilazione, invece, per l'esecuzione dei test il file C è stato compilato col il seguente flag:
+```console
+mpicc -O3 word_count.c
+```
 
-Inoltre è stato analizzato il comportamento della soluzione anche in base allo scheduling dei processi sui nodi. Infatti, MPI permette di specificare la policy di scheduling da seguire nell'assegnamento dei processi sui vari nodi del cluster (specificati nel `hostfile`). In particolar modo due sono le policy che possono essere specificate all'esecuzione:
+Nella fase di benchmark è stato anche analizzato il comportamento della soluzione in base allo scheduling dei processi sui nodi. Infatti, Open MPI permette di specificare la policy di scheduling da seguire nell'assegnamento dei processi sui vari nodi del cluster (specificati nel `hostfile`). In particolar modo due sono le policy che possono essere specificate all'esecuzione:
 - **By slot**: questa è la policy di default che può essere richiesta esplicitamente mediante l'opzione `--map-by slot` del comando `mpirun`. In questa modalità, Open MPI schedula i processi su un nodo finché tutti i suoi slots specificati nel hostflie non sono esauriti, prima di passare al successivo. L'idea è di massimizzare il numero di processi "adiacienti".\
 Esempio: 
 ```console
@@ -873,7 +876,7 @@ Esempio:
  Hello World I am rank 6 of 8 running on node1
  Hello World I am rank 7 of 8 running on node1
 ```
-- **By node**: questa policy puà essere richiesta mediante l'opzione `--map-by node` del comando `mpirun`. In questa modalità, Open MPI schedula un processo su ogni nodo secondo una policy round-robin finché tutti i processi non sono stati schedulati.\
+- **By node**: questa policy può essere richiesta mediante l'opzione `--map-by node` del comando `mpirun`. In questa modalità, Open MPI schedula un processo su ogni nodo secondo una policy round-robin finché tutti i processi non sono stati schedulati.\
 Esempio:
 ```console
 shell$ cat my-hosts
@@ -1012,7 +1015,7 @@ Hello World I am rank 7 of 8 running on node1
 
 Dai risultati ottenuti dalla *scalabilità forte* notiamo, come ci si aspettava, che all'aumentare del numero di processori usati il tempo di esecuzione
 decresce. Tale decremento, però, man mano va ad appiattirsi sempre di più fino a un certo punto in cui l'overhead di comunicazione ottenuto dall'aggiunta di nuovi
-processori non è tale da rallentare l'esecuzione. Osserviamo anche, dai due test eseguiti, come all'aumentare della dimensione dell'input lo speedup ottenuto risulta a sua volta aumentare e questo perché ovviamente l'overhead di comunicazione ha un impatto decisamente maggiore su input non molto grandi. Infatti, con input di dimensione N = 566 MB le performance massime e di conseguenza anche lo speedup massimo sono raggiunti intorno all'uso di 9 processori, al contrario raddoppiando l'input vengono raggiunti intorno ai 11-12 processori.\
+processori non è tale da rallentare l'esecuzione. Osserviamo anche, dai due test eseguiti, come all'aumentare della dimensione dell'input lo speedup ottenuto risulta a sua volta aumentare e questo perché banalmente l'overhead di comunicazione ha un impatto maggiore su input non molto grandi. Infatti, con input di dimensione N = 566 MB le performance massime e di conseguenza anche lo speedup massimo sono raggiunti intorno all'uso di 9 processori, al contrario raddoppiando l'input vengono raggiunti intorno ai 11-12 processori.\
 Dunque lo speedup tende a crescere man mano che la dimensione dell'input lo fa.\
 Dal punto di vista dello scheduling il tempo impiegato è abbastanza simile, l'unica cosa che possiamo notare è il comportamento relativo alla crescita dello speedup. Infatti, lo scheduling *By node* ha una crescita "più costante", mentre lo scheduling *By slot* in alcuni punti ha dei cali di prestazioni dovuti probabilmente alla saturazione delle macchine fisiche. Ad esempio ciò è visibile nel grafico di N con dimensione 1.2G quando si vanno a saturare le 8 vCPU della prima macchina.
 
@@ -1020,15 +1023,16 @@ Passando ai risultati della *scalabilità debole* notiamo che la crescità dell'
 Dal punto di vista dello scheduling, invece, lo scheduling *By slot* tende ad avere un comportamento generale migliore. Probabilmente perché
 il costo dell'overhead della comunicazione, a causa della workload non troppo elevato, è tale da rendere trascurabile la saturazione delle macchine fisiche e quindi l'"adiacenza" dei processi fornita dallo scheduling *By slot* permette di ottenere tempi di esecuzioni migliori.
 
+Un'osservazione ulteriore che possiamo muovere riguardo ai comportamenti degli scheduling è relativa alla tipologia di istanze di macchine, che sono state utilizzate, che risultano essere alquanto performanti. Dunque, i workload di test probabilmente non sono riusciti a saturare eccessivamente le macchine, e infatti lo scheduling *By slot* non ha mostrato rallentamenti "significativi" come ci si aspettava.
 
 <!-- CONCLUSIONI -->
 
 # **Conclusioni**
 L'algoritmo giova senza dubbio della parallelizzazione, mostrando un aumento delle prestazioni all'aumentare della dimensione dell'input e del numero
-di processori. Possiamo però senza alcun dubbio notare delle criticità. La più significativa è sicuramente l'overhead relativo alla comunicazione che tende a crescere abbastanza velocemente. Ciò è dovuto principalmente al processo di gathering dei dati da parte del MASTER che è senza alcun dubbio il bottle-neck dell'implementazione. Infatti, nonostante il tentativo di miglioramento mediante una comunicazione non bloccante non è stato sufficiente a ridurre l'overhead. Quindi, bisognerebbe adottare soluzioni e strategie più intelligenti e sofisticate come evitare che i dati siano inviati tutti al MASTER, inserendo ad esempio degli step intermedi che prevedano il raccoglimento dei dati da altri processi in modo da ridurre le comunicazioni e i dati inoltrati al MASTER.\
+di processori. Possiamo però senza alcun dubbio notare delle criticità. La più significativa è sicuramente l'overhead relativo alla comunicazione che tende a crescere abbastanza velocemente. Ciò è dovuto principalmente al processo di gathering dei dati da parte del MASTER che costituisce il bottle-neck dell'implementazione. Infatti, il tentativo di miglioramento mediante l'uso di comunicazioni non bloccanti non è stato sufficiente a ridurre l'overhead. Bisognerebbe, dunque, adottare soluzioni e strategie più intelligenti e sofisticate come evitare che i dati siano inviati tutti al MASTER, inserendo ad esempio degli step intermedi che prevedano il raccoglimento dei dati da altri processi in modo da ridurre le comunicazioni e i dati inoltrati verso il MASTER.\
 Un ulteriore miglioramento potrebbe essere fatto nel processo di scattering iniziale. Qui, infatti, si potrebbe adottare una soluzione più a basso livello 
 mediante Pack and UnPack evitando, come fatto nel processo di raccolta, la trasmissione di dati "superflui".\
-Infine, un'ultima leggera critica potrebbe essere fatta sul processo di ordinamento. Questo, infatti, potrebbe essere eseguito completamente o in parte durante il processo di raccolta in modo da evitare un ordinamento a posteriori. 
+Infine, un'ultima leggera critica potrebbe essere fatta sul processo di ordinamento. Questo, infatti, potrebbe essere eseguito completamente o almeno in parte durante il processo di raccolta in modo da evitare un ordinamento a posteriori. 
 
 <!-- LICENSE -->
 
